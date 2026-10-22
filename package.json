@@ -1,0 +1,30 @@
+{
+  "name": "@elemount/reply-to-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Pi extension for replying to AI messages, files, and Git patches with Vim annotations.",
+  "type": "module",
+  "author": "elemount",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elemount/reply-to-ai.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
