@@ -101,7 +101,9 @@ export function replyRangeDocument(replies: readonly IndexedReply[]): string {
 	).join("\n\n");
 }
 
-export type ReviewTag = "reply" | "replies" | "patch" | "file";
+export type ReviewTag = "reply" | "replies" | "patch" | "file" | "files";
+
+const FILES_REVIEW_INSTRUCTIONS = "Each file review identifies its original source. Inspect and edit those real files as requested, not the temporary annotated copies. Only saved files containing @@ are included.";
 
 const HISTORY_COMMENT_INSTRUCTIONS = "In this review, @ai: marks past comments for context only; @@ marks current comments. Do not treat comments in earlier chat messages as new requests.";
 
@@ -119,7 +121,7 @@ export function reviewPrompt(annotated: string, subject = "your latest response"
 	return [
 		"Please address my added @@ comments below; other text is quoted context.",
 		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
-		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
+		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "files" ? [FILES_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		`${openReviewTag(tag, subject, sourceFile)}${cdata("\n" + annotated.replace(/(?:\r?\n)+$/, "") + "\n")}</${tag}>`,
 	].join("\n");
@@ -132,7 +134,7 @@ export function reviewFilePrompt(filePath: string, commentsPath: string, subject
 	return [
 		"Please address my added @@ comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.",
 		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
-		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
+		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "files" ? [FILES_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		openReviewTag(tag, subject, sourceFile),
 		`<annotated_file>${xmlEscape(filePath)}</annotated_file>`,
@@ -143,6 +145,41 @@ export function reviewFilePrompt(filePath: string, commentsPath: string, subject
 	].join("\n");
 }
 
+export function fileReviewSection(source: string, content: string): string {
+	return `<file source="${xmlEscape(source)}">${cdata("\n" + content.replace(/(?:\r?\n)+$/, "") + "\n")}</file>`;
+}
+
+export function fileWorkspaceReferencePrompt(manifest: string, savedDirectory: string): string {
+	return [
+		"Please address my @@ comments in these saved file reviews. Read the manifest to map annotated copies to original files.",
+		FILES_REVIEW_INSTRUCTIONS,
+		"Use rg/grep for @@ and read surrounding lines as needed; do not load every file in full.",
+		"", "<files>",
+		`<review_manifest>${xmlEscape(manifest)}</review_manifest>`,
+		...(process.platform === "win32" ? [`<command_shell>${commandShell()}</command_shell>`] : []),
+		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", "@@", savedDirectory]))}</search_command>`,
+		"</files>",
+	].join("\n");
+}
+
+export function reviewVimBufferSettings(filetype: "markdown" | "diff" | "auto"): string {
+	return `setlocal nomodeline noundofile noswapfile wrap linebreak
+${filetype === "auto" ? "filetype on\nfiletype detect" : `setlocal filetype=${filetype}`}
+setlocal fileencoding=utf-8 fileformat=unix
+set nobackup nowritebackup
+set laststatus=2
+let &l:statusline = ' /re | Enter: comment below | ,a: inline @@ | save then quit to send %=%l/%L '
+syntax match PiReviewComment /@@.*$/
+highlight default link PiReviewComment Todo
+`;
+}
+
+export const REVIEW_VIM_KEYMAPS = `cnoremap <buffer> <expr> <CR> <SID>ReviewCommand()
+nnoremap <buffer> ZZ :x<CR>
+nnoremap <buffer> ZQ :qall!<CR>
+nnoremap <buffer> <CR> o@@<Space>
+nnoremap <buffer> ,a A<Space>@@<Space>`;
+
 /** Snapshot every successful write. :w then :q sends the LAST SAVED contents. */
 export function reviewVimScript(savedPath: string, filetype: "markdown" | "diff" | "auto" = "markdown"): string {
 	return `scriptencoding utf-8
@@ -151,14 +188,7 @@ set nocompatible
 let s:saved_cpo = &cpoptions
 set cpoptions&vim
 let s:saved_file = ${JSON.stringify(savedPath)}
-setlocal nomodeline noundofile noswapfile wrap linebreak
-${filetype === "auto" ? "filetype on\nfiletype detect" : `setlocal filetype=${filetype}`}
-setlocal fileencoding=utf-8 fileformat=unix
-set nobackup nowritebackup
-set laststatus=2
-let &l:statusline = ' /re | Enter: comment below | ,a: inline @@ | save then quit to send %=%l/%L '
-syntax match PiReviewComment /@@.*$/
-highlight default link PiReviewComment Todo
+${reviewVimBufferSettings(filetype)}
 
 function! s:Saved() abort
   if writefile(getline(1, '$'), s:saved_file) != 0
@@ -176,11 +206,7 @@ function! s:ReviewCommand() abort
   endif
   return "\\<CR>"
 endfunction
-cnoremap <buffer> <expr> <CR> <SID>ReviewCommand()
-nnoremap <buffer> ZZ :x<CR>
-nnoremap <buffer> ZQ :qall!<CR>
-nnoremap <buffer> <CR> o@@<Space>
-nnoremap <buffer> ,a A<Space>@@<Space>
+${REVIEW_VIM_KEYMAPS}
 let &cpoptions = s:saved_cpo
 `;
 }

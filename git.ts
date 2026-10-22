@@ -2,11 +2,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { commandShell, formatShellCommand } from "./platform.ts";
 
-export const REVIEW_USAGE = "Usage: /re [N | N-M | @file | message [N or N-M] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
+export const REVIEW_USAGE = "Usage: /re [N | N-M | @file [@file ...] | @directory | message [N or N-M] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
 export type ReviewTarget =
 	| { kind: "message"; offset: number }
 	| { kind: "range"; start: number; end: number }
 	| { kind: "file"; path: string }
+	| { kind: "files"; paths: string[] }
 	| { kind: "commit"; revision: string }
 	| { kind: "pr"; base?: string }
 	| { kind: "diff" };
@@ -25,13 +26,30 @@ function messageTarget(value: string): ReviewTarget {
 export function parseReviewTarget(args: string): ReviewTarget {
 	const input = args.trim();
 	if (input.startsWith("@")) {
-		let path = input.slice(1).trim();
-		if (path.startsWith('"') || path.startsWith("'")) {
-			if (path.length < 2 || path.at(-1) !== path[0]) throw new Error(REVIEW_USAGE);
-			path = path.slice(1, -1);
+		const paths: string[] = [];
+		let cursor = 0;
+		while (cursor < input.length) {
+			if (input[cursor++] !== "@") throw new Error(REVIEW_USAGE);
+			let path: string;
+			const quote = input[cursor];
+			if (quote === '"' || quote === "'") {
+				const end = input.indexOf(quote, cursor + 1);
+				if (end < 0) throw new Error(REVIEW_USAGE);
+				path = input.slice(cursor + 1, end);
+				cursor = end + 1;
+				if (cursor < input.length && !/\s/.test(input[cursor])) throw new Error(REVIEW_USAGE);
+			} else {
+				// Preserve unquoted spaces within one path; whitespace + @ starts the next reference.
+				const next = /\s+@/.exec(input.slice(cursor));
+				const end = next ? cursor + next.index : input.length;
+				path = input.slice(cursor, end).trim();
+				cursor = end;
+			}
+			if (!path || path.includes("\0")) throw new Error(REVIEW_USAGE);
+			paths.push(path);
+			while (cursor < input.length && /\s/.test(input[cursor])) cursor++;
 		}
-		if (!path || path.includes("\0")) throw new Error(REVIEW_USAGE);
-		return { kind: "file", path };
+		return paths.length === 1 ? { kind: "file", path: paths[0] } : { kind: "files", paths };
 	}
 	const [kind = "message", ref, ...extra] = input.split(/\s+/).filter(Boolean);
 	if (extra.length) throw new Error(REVIEW_USAGE);
@@ -87,7 +105,7 @@ function gitCommand(cwd: string, args: string[]): string {
 }
 
 /** Generate a read-only snapshot of a Git patch; no checkout, fetch, or index changes. */
-export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "range" | "file" }>): Promise<string | undefined> {
+export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "range" | "file" | "files" }>): Promise<string | undefined> {
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
 	const header = [`# Repository: ${JSON.stringify(root)}`, `# Command shell: ${commandShell()}`];
 	let patchArgs: string[];

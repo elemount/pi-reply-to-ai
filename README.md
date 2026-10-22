@@ -1,6 +1,6 @@
 # reply-to-ai
 
-Annotate an AI reply, a private copy of a file, or a Git patch in **vim**. Save, then quit to send your comments back to the AI.
+Annotate AI replies, private file copies, directories, or Git patches in **vim**. Save, then quit to send your comments back to the AI.
 
 Personal Pi extension by [elemount](https://github.com/elemount). Hosted in a public GitHub repository for direct installation; not published to npm or submitted to the Pi community/gallery. The package is marked `private` to prevent accidental npm publishing and does not use the gallery-discovery keyword.
 
@@ -102,6 +102,8 @@ To persistently use a working clone instead of the Git-managed installation, rem
 | `/re message 0-9` | Equivalent range form; the ten most recent AI text replies |
 | `/re @src/main.ts` | A private copy of a file, leaving the original untouched while annotating |
 | `/re @"path with spaces.md"` | Same, using Pi's quoted file-reference format |
+| `/re @a.ts @b.ts` | One temporary file copy per Vim tab |
+| `/re @src/` | A read-only file tree; open files lazily into a review pane |
 | `/re commit` or `/re c` | Latest commit (`HEAD`), compared with its first parent |
 | `/re c HEAD~1` | Previous commit; any valid commit revision is accepted |
 | `/re pr` or `/re p` | All committed changes from the PR base's merge base to `HEAD` |
@@ -125,11 +127,27 @@ For PRs, the extension tries the local `origin/HEAD` reference first, then `orig
 
 ### File references
 
-Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to the working directory, absolute, or start with `~/` (`~\` also works on native Windows). Windows drive paths and UNC paths use the native Windows filesystem; in WSL use Linux paths such as `/mnt/c/...`. Quote paths with spaces, e.g. `/re @"docs/design notes.md"`. One command reviews one file; the entire text after `@` is treated as the path, with no shell expansion.
+Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to the working directory, absolute, or start with `~/` (`~\` also works on native Windows). Windows drive paths and UNC paths use the native Windows filesystem; in WSL use Linux paths such as `/mnt/c/...`. Quote paths with spaces, e.g. `/re @"docs/design notes.md"`. Multiple references are separated by whitespace followed by `@`, for example `/re @a.ts @"docs/design notes.md"`. A quoted path may contain spaces or literal `@` characters. No shell expansion is performed.
 
-The extension reads a regular UTF-8 text file and opens a private temporary copy. The original is never opened for writing by the extension, including on save, cancellation, or editor failure. Empty files and read-only sources are supported. Directories, binary/non-UTF-8 files, and files over 32 MiB are rejected. Symlinks resolve to the actual source path.
+The extension reads a regular UTF-8 text file and opens a private temporary copy. The original is never opened for writing by the extension, including on save, cancellation, or editor failure. Empty files and read-only sources are supported. Binary/non-UTF-8 files and files over 32 MiB are rejected when opened. Directories use the workspace flow below. Symlinks resolve to the actual source path.
 
 The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). Scratch copies use UTF-8 and LF line endings, including when the original uses CRLF; the original is not rewritten. The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 8 KiB rule as other targets.
+
+### Directories and multiple files
+
+`/re @a.ts @b.ts` opens one private copy per tab. Use **`gt` / `gT`** to switch tabs. Duplicate source paths are opened once. The status line identifies the original file.
+
+`/re @src/` opens a lightweight, read-only file tree on the left and a review pane on the right. In the tree, **Enter** expands/collapses a directory or opens a file. File contents are copied only when opened; unopened files are never submitted. **`:ReTree`** returns to or restores the tree. No Neo-tree/Neovim plugin is required.
+
+Git must be installed, but **neither the working directory nor the selected directory needs to be a Git repository**. Existing repositories use their Git file listing; ordinary directories use Git metadata inside the private temporary workspace to apply `.gitignore` rules. The extension never initializes `.git` in a source folder. Directory scans also skip common dependency/credential directories, `.env`/key files, symlinks, binary data, and oversized files. Explicit file references can select files hidden by directory filtering.
+
+Save the current file with **`:w`**. Use **`:wqa`** to save all modified review buffers and exit Vim. In multi-window/tab mode, `:wq` may only close the current window; Pi resumes only after Vim exits. Enter and `,a` remain comment shortcuts in review files, while Enter navigates in the tree.
+
+Submission is intentionally simple: **only saved copies containing the literal `@@` marker are included**, once per source file. There is no source diff or old/new comment comparison for file references. Even an existing or empty `@@` counts. Unsaved edits, unmarked copies, the tree, and preview buffers are excluded. `:q` / `:qa!` discard unsaved changes, but previously saved marked versions still submit. Remove `@@` and save again to exclude a file.
+
+All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 8 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `@@`.
+
+Limits: 64 input references, 2,000 reviewable directory files, and 64 MiB total opened-copy/saved-review data. Narrow the selection if a limit is reached. Git listing has a 30-second timeout.
 
 ### What is the merge base?
 
@@ -161,7 +179,7 @@ An original paragraph. @@ Add an example.
 Original text @@ First comment @@ Second comment
 ```
 
-A comment ends at the next `@@` marker or the end of its line. Empty comments and unchanged markers from the original document do not count as new comments. User-authored text can be in any language; plugin messages and prompts are in English.
+For chat and generated Git patch reviews, a comment ends at the next `@@` marker or the end of its line; empty comments and unchanged original markers do not count as new comments. **File/directory reviews use marker presence only**, not this comparison. User-authored text can be in any language; plugin messages and prompts are in English.
 
 ### Historical versus current chat comments
 
@@ -172,7 +190,7 @@ For chat reviews (`/re`, numeric indexes, ranges, and Ctrl+Alt+R), **every exist
 
 Both inline and large-file prompts explicitly explain this distinction and tell the AI not to treat comments from earlier chat messages as new requests. The conversion happens only before editing, so newly added `@@` comments stay current. Editing only historical `@ai:` text does not submit a new review.
 
-File references and Git patches are not rewritten: their existing markers and diff hunk headers remain intact, and existing source markers are still excluded from new-comment detection.
+File references and generated Git patches are not rewritten. File reviews include any saved copy containing `@@`; generated Git reviews still exclude their original diff hunk headers from new-comment detection.
 
 ### Review-buffer shortcuts
 
@@ -191,19 +209,22 @@ These bindings apply only to the temporary review buffer (replies, files, and pa
 - `:wq`, `:w` then `:q`, and `:w` then `:q!` all send the **last saved version**.
 - Changes made after the last save are not sent unless saved again.
 - Quit without ever saving to cancel. In this review buffer, `:q` discards unsaved edits without a confirmation prompt.
-- No new comments means no message, even after saving.
+- Chat/generated Git reviews require new comments. File/directory reviews only require a saved copy containing `@@`.
+- For multiple files or a directory, use `:wqa` to save all modified copies and exit.
 - An abnormal editor exit sends nothing and restores Pi's UI.
 
 Writes are tracked using Vim events, so mappings and commands such as `:wall` and `:execute 'write'` also work. Your vimrc is not modified.
 
 ## Message size
 
-The limit is **8 KiB of UTF-8 document bytes**, including trailing blank lines.
+The inline-message limit is **8 KiB of UTF-8 review bytes**, including trailing blank lines; multi-file workspaces count the combined source-tagged collection.
 
 - **Up to 8 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
 - **Over 8 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
 
-The outer tag identifies the source: `<reply>` for one AI reply, `<replies>` for a reply range, `<patch>` for generated Git patches, or `<file source="...">` for file references. A range prompt quotes the collection of numbered `<reply>` sections and tells the AI to use their indexes and surrounding text to locate comments. Annotated text goes directly inside it, without an extra wrapper:
+Large multi-file workspaces use `reviews.json` instead: it contains only the included source-file/annotated-copy mappings, not a duplicated comment index. The private `saved` folder contains only included snapshots, so the AI can search it for `@@` and read relevant context.
+
+The outer tag identifies the source: `<reply>` for one AI reply, `<replies>` for a reply range, `<patch>` for generated Git patches, `<file source="...">` for one file, or `<files>` for a file collection. A range prompt quotes the collection of numbered `<reply>` sections and tells the AI to use their indexes and surrounding text to locate comments. Annotated text goes directly inside it, without an extra wrapper:
 
 ```xml
 <reply subject="AI response 1 (0 = latest)"><![CDATA[
@@ -213,7 +234,7 @@ Original reply. @@ Add an example.
 
 CDATA preserves code, XML tags, and arbitrary user text without confusing boundaries. Literal `]]>` sequences are safely split across CDATA sections. Large-file prompts keep the same `<reply>`, `<replies>`, `<patch>`, or `<file>` outer tag and use `<annotated_file>`, `<comments_file>`, and `<search_command>` elements instead. `<annotated_file>` is the saved source text with your comments, not a code file the AI should edit directly.
 
-Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` (POSIX directory mode `0700`, file mode `0600`; Windows uses the temporary directory's inherited ACLs). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
+Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` or `pi-files-*` (POSIX directory mode `0700`, file mode `0600`; Windows uses the temporary directory's inherited ACLs). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
 
 ## Editor
 

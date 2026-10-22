@@ -442,11 +442,11 @@ test("large @file reviews preserve private copies and source references, not ful
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("file cancellation, unchanged reviews, and editor failure never touch the source or send", async () => {
+test("file cancellation and editor failure do not send; any saved @@ marker counts without diffing", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
 	try {
 		const source = join(directory, "source.txt"); const content = "Text @@ already present\n"; writeFileSync(source, content);
-		for (const mode of ["cancel", "unchanged", "crash"]) {
+		for (const mode of ["cancel", "crash"]) {
 			await fakeEditor(mode, async (invocation) => {
 				const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
 				assert.equal(h.sent.length, 0);
@@ -454,10 +454,84 @@ test("file cancellation, unchanged reviews, and editor failure never touch the s
 				assert.equal(existsSync(dirname(invocation().file)), false);
 			});
 		}
+		await fakeEditor("unchanged", async () => {
+			const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
+			assert.equal(h.sent.length, 1);
+			assert.match(h.sent[0][0], /Text @@ already present/);
+			assert.equal(readFileSync(source, "utf8"), content);
+		});
 		await fakeEditor("submit", async () => {
 			const h = harness(); h.ctx.cwd = directory; await h.command("@missing.txt");
 			assert.equal(h.notices.at(-1)[1], "error"); assert.equal(h.lifecycle.length, 0);
 			await h.command(); assert.equal(h.sent.length, 1);
+		});
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("multiple files use tabs and ordinary directories use a lazy tree, submitting one combined review", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-command-files-"));
+	try {
+		writeFileSync(join(directory, "a.ts"), "const a = 1;\n"); writeFileSync(join(directory, "b.ts"), "const b = 2;\n");
+		for (const [args, tree] of [["@a.ts @b.ts", false], ["@.", true]]) {
+			await fakeEditor("submit", async invocation => {
+				const h = harness([]); h.ctx.cwd = directory; await h.command(args);
+				assert.equal(h.sent.length, 1); assert.equal(h.notices.length, 0);
+				assert.equal(invocation().tree, tree);
+				assert.equal(invocation().args.includes("-p2"), !tree);
+				assert.match(h.sent[0][0], /<files subject="these files">/);
+				assert.match(h.sent[0][0], /a.ts/); assert.match(h.sent[0][0], /b.ts/);
+				assert.match(h.sent[0][0], /@@ File comment/);
+				assert.doesNotMatch(h.sent[0][0], /@ai: marks past comments/);
+				assert.equal(existsSync(invocation().workspace), false);
+				assert.deepEqual(h.lifecycle, ["stop", "start", ["render", true]]);
+			});
+		}
+		assert.equal(existsSync(join(directory, ".git")), false);
+		assert.equal(readFileSync(join(directory, "a.ts"), "utf8"), "const a = 1;\n");
+		assert.equal(readFileSync(join(directory, "b.ts"), "utf8"), "const b = 2;\n");
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("file workspaces submit saved marker presence only and clean up cancelled/crashed reviews", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-command-files-"));
+	try {
+		writeFileSync(join(directory, "a.txt"), "@@ present\n"); writeFileSync(join(directory, "b.txt"), "no marker\n");
+		await fakeEditor("unchanged", async invocation => {
+			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
+			assert.equal(h.sent.length, 1); assert.match(h.sent[0][0], /@@ present/);
+			assert.doesNotMatch(h.sent[0][0], /no marker/);
+			assert.equal(existsSync(invocation().workspace), false);
+		});
+		for (const mode of ["cancel", "crash"]) {
+			await fakeEditor(mode, async invocation => {
+				const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
+				assert.equal(h.sent.length, 0); assert.equal(existsSync(invocation().workspace), false);
+			});
+		}
+		writeFileSync(join(directory, "a.txt"), "no marker\n");
+		await fakeEditor("unchanged", async () => {
+			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
+			assert.equal(h.sent.length, 0); assert.match(h.notices[0][0], /No saved files contain @@/);
+		});
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("large file workspaces reference a per-file source manifest instead of embedding contents", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-command-files-"));
+	try {
+		writeFileSync(join(directory, "a.txt"), "x".repeat(5000)); writeFileSync(join(directory, "b.txt"), "y".repeat(5000));
+		await fakeEditor("submit", async invocation => {
+			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
+			const workspace = invocation().workspace;
+			try {
+				assert.equal(h.sent.length, 1); const prompt = h.sent[0][0];
+				assert.match(prompt, /<review_manifest>/); assert.doesNotMatch(prompt, /x{100}|y{100}/);
+				const entries = JSON.parse(readFileSync(join(workspace, "reviews.json"), "utf8"));
+				assert.equal(entries.length, 2);
+				for (const entry of entries) { assert.ok(entry.source); assert.match(readFileSync(entry.annotatedFile, "utf8"), /@@ File comment/); }
+				assert.equal(existsSync(join(workspace, "copies")), false);
+				assert.equal(existsSync(join(workspace, "manifest.json")), false);
+			} finally { rmSync(workspace, { recursive: true, force: true }); }
 		});
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });

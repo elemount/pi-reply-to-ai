@@ -48,7 +48,7 @@ export function findReviewEditor(cwd: string): string {
 		: "Cannot find vim. Install console Vim or set PI_REVIEW_EDITOR to its executable path (vim.exe on Windows).");
 }
 
-function launchEditor(editor: string, args: string[], cwd: string): Promise<void> {
+export function launchEditor(editor: string, args: string[], cwd: string): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(editor, args, { cwd, stdio: "inherit", shell: false });
 		child.once("error", reject);
