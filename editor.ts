@@ -1,37 +1,56 @@
 import { spawn } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { reviewDocument, reviewVimScript } from "./core.ts";
+import { editorCandidates, environmentValue, isWsl } from "./platform.ts";
 
-function executable(command: string, cwd: string): string | undefined {
-	const candidates = isAbsolute(command) || command.includes("/") || command.includes("\\")
-		? [resolve(cwd, command)]
-		: (process.env.PATH ?? "").split(delimiter).map((directory) => resolve(cwd, directory, command));
-	for (const candidate of candidates) {
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch { /* Try the next PATH entry. */ }
-	}
-	return undefined;
+function executable(candidate: string): boolean {
+	try {
+		if (process.platform === "win32") {
+			// Use console executables directly, not batch files or Git Bash's MSYS Vim.
+			if (!/\.(exe|com)$/i.test(candidate) || existsSync(join(dirname(candidate), "msys-2.0.dll"))) return false;
+		}
+		if (!statSync(candidate).isFile()) return false;
+		accessSync(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+		return true;
+	} catch { return false; }
+}
+
+function windowsVimCandidates(): string[] {
+	const env = process.env;
+	const roots = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+		.map(name => environmentValue(env, name)).filter((root): root is string => Boolean(root)).map(root => join(root, "Vim"));
+	if (env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, "Programs", "Vim"));
+	if (env.SystemDrive) roots.push(join(env.SystemDrive + "\\", "tools", "vim"));
+	const scoop = env.SCOOP || (env.USERPROFILE && join(env.USERPROFILE, "scoop"));
+	if (scoop) roots.push(join(scoop, "apps", "vim", "current"));
+	return [...new Set(roots)].flatMap(root => {
+		let versions: string[] = [];
+		try { versions = readdirSync(root).filter(name => /^vim[\d.]+$/i.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); }
+		catch { /* Not installed in this location. */ }
+		return [join(root, "vim.exe"), ...versions.map(version => join(root, version, "vim.exe"))];
+	});
 }
 
 export function findReviewEditor(cwd: string): string {
-	const configured = process.env.PI_REVIEW_EDITOR;
-	for (const command of configured ? [configured] : ["vim"]) {
-		const path = executable(command, cwd);
-		if (path) return path;
+	const configured = environmentValue(process.env, "PI_REVIEW_EDITOR")?.replace(/^(["'])(.*)\1$/, "$2");
+	if (isWsl() && configured && /\.(exe|cmd|bat)$/i.test(configured)) {
+		throw new Error("Use Linux vim inside WSL, not a Windows executable. Install it in WSL or set PI_REVIEW_EDITOR=/usr/bin/vim.");
 	}
+	const candidates = editorCandidates(configured || "vim", cwd);
+	if (!configured && process.platform === "win32") candidates.push(...windowsVimCandidates());
+	const found = candidates.find(executable);
+	if (found) return found;
 	throw new Error(configured
-		? `Cannot find PI_REVIEW_EDITOR=${configured} (expected a vim executable name or path, without arguments).`
-		: "Cannot find vim. Install it or set PI_REVIEW_EDITOR to its path.");
+		? `Cannot find a usable PI_REVIEW_EDITOR=${configured} (expected a native console vim executable path, without arguments or batch wrappers).`
+		: "Cannot find vim. Install console Vim or set PI_REVIEW_EDITOR to its executable path (vim.exe on Windows).");
 }
 
 function launchEditor(editor: string, args: string[], cwd: string): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(editor, args, { cwd, stdio: "inherit" });
+		const child = spawn(editor, args, { cwd, stdio: "inherit", shell: false });
 		child.once("error", reject);
 		child.once("close", (code, signal) => {
 			if (code === 0) resolve();
@@ -48,7 +67,7 @@ export interface SavedReview {
 }
 
 function remove(path: string): void {
-	try { rmSync(path, { recursive: true, force: true }); }
+	try { rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 	catch { /* Best-effort cleanup. */ }
 }
 
@@ -73,6 +92,7 @@ export async function editReview(original: string, ctx: ExtensionContext, option
 				// Disable modelines BEFORE reading model-generated text; keep the user's vimrc.
 				await launchEditor(editor, [
 					"-n", "-i", "NONE",
+					"--cmd", "set encoding=utf-8",
 					"--cmd", "autocmd BufReadPre * setlocal nomodeline",
 					"-S", scriptPath, "--", filePath,
 				], ctx.cwd);
@@ -88,7 +108,7 @@ export async function editReview(original: string, ctx: ExtensionContext, option
 		if (failure) throw failure;
 		if (!existsSync(savedPath)) return undefined;
 		const content = readFileSync(savedPath, "utf8").replace(/^\uFEFF/, "");
-		chmodSync(savedPath, 0o600);
+		if (process.platform !== "win32") chmodSync(savedPath, 0o600);
 		handedOff = true;
 		return { content, filePath: savedPath, cleanup: () => remove(directory) };
 	} finally {

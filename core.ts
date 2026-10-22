@@ -1,4 +1,6 @@
 /** Pure helpers for the /re extension. No Pi runtime imports. */
+import { commandShell, formatShellCommand } from "./platform.ts";
+export { shellQuote } from "./platform.ts";
 export interface MessageLike {
 	role: string;
 	content?: unknown;
@@ -50,7 +52,7 @@ export function newComments(original: string, annotated: string): ReviewComment[
 
 /** Leave one blank line for appending comments in Vim. */
 export function reviewDocument(original: string): string {
-	return `${original.replace(/(?:\r?\n)+$/, "")}\n\n`;
+	return `${original.replace(/\r\n/g, "\n").replace(/\n+$/, "")}\n\n`;
 }
 
 function xmlEscape(value: string): string {
@@ -84,10 +86,6 @@ export function reviewPrompt(annotated: string, subject = "your latest response"
 /** Full documents up to 8 KiB (UTF-8) are included inline; larger ones stay on disk. */
 export const INLINE_REVIEW_BYTES = 8 * 1024;
 
-export function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 export function reviewFilePrompt(filePath: string, commentsPath: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
 		"Please address my added @@ comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.",
@@ -96,19 +94,23 @@ export function reviewFilePrompt(filePath: string, commentsPath: string, subject
 		openReviewTag(tag, subject, sourceFile),
 		`<annotated_file>${xmlEscape(filePath)}</annotated_file>`,
 		`<comments_file>${xmlEscape(commentsPath)}</comments_file>`,
-		`<search_command>${cdata(`rg -n -F -- '@@' ${shellQuote(filePath)}`)}</search_command>`,
+		...(process.platform === "win32" ? [`<command_shell>${commandShell()}</command_shell>`] : []),
+		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", "@@", filePath]))}</search_command>`,
 		`</${tag}>`,
 	].join("\n");
 }
 
 /** Snapshot every successful write. :w then :q sends the LAST SAVED contents. */
 export function reviewVimScript(savedPath: string, filetype: "markdown" | "diff" | "auto" = "markdown"): string {
-	return `set nocompatible
+	return `scriptencoding utf-8
+set encoding=utf-8
+set nocompatible
 let s:saved_cpo = &cpoptions
 set cpoptions&vim
 let s:saved_file = ${JSON.stringify(savedPath)}
 setlocal nomodeline noundofile noswapfile wrap linebreak
 ${filetype === "auto" ? "filetype on\nfiletype detect" : `setlocal filetype=${filetype}`}
+setlocal fileencoding=utf-8 fileformat=unix
 set nobackup nowritebackup
 set laststatus=2
 let &l:statusline = ' /re | Enter: comment below | ,a: inline @@ | save then quit to send %=%l/%L '

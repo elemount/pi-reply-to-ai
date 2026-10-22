@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { shellQuote } from "./core.ts";
+import { commandShell, formatShellCommand } from "./platform.ts";
 
 export const REVIEW_USAGE = "Usage: /re [N | @file | message [N] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
 export type ReviewTarget =
@@ -76,14 +76,13 @@ async function defaultBase(cwd: string): Promise<string> {
 }
 
 function gitCommand(cwd: string, args: string[]): string {
-	return ["git", "-C", cwd, ...gitPrefix, ...args]
-		.map((arg) => /^[a-zA-Z0-9_./:=+-]+$/.test(arg) ? arg : shellQuote(arg)).join(" ");
+	return formatShellCommand("git", ["-C", cwd, ...gitPrefix, ...args]);
 }
 
 /** Generate a read-only snapshot of a Git patch; no checkout, fetch, or index changes. */
 export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "file" }>): Promise<string | undefined> {
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
-	const header = [`# Repository: ${JSON.stringify(root)}`];
+	const header = [`# Repository: ${JSON.stringify(root)}`, `# Command shell: ${commandShell()}`];
 	let patchArgs: string[];
 	if (target.kind === "commit") {
 		const commit = await resolveCommit(root, target.revision);

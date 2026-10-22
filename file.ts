@@ -1,21 +1,26 @@
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 
 export function resolveReviewPath(cwd: string, path: string): string {
 	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) return join(homedir(), path.slice(2));
+	if (process.platform !== "win32" && win32.isAbsolute(path) && !path.startsWith("/")) {
+		throw new Error("Use a native path. In WSL, use /mnt/c/... or translate the Windows path with wslpath.");
+	}
 	return resolve(cwd, path);
 }
 
 /** Read a regular UTF-8 text file without ever opening the original for writing. */
 export async function fileReview(cwd: string, path: string): Promise<{ path: string; content: string }> {
 	const source = await realpath(resolveReviewPath(cwd, path));
-	// Nonblocking open also avoids hanging if the supplied path names a FIFO.
-	const file = await open(source, constants.O_RDONLY | constants.O_NONBLOCK);
+	if (!(await stat(source)).isFile()) throw new Error("File review requires a regular text file.");
+	// POSIX nonblocking open avoids hanging on a FIFO if the path changes after stat().
+	const flags = constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NONBLOCK);
+	const file = await open(source, flags);
 	try {
 		const info = await file.stat();
 		if (!info.isFile()) throw new Error("File review requires a regular text file.");

@@ -6,7 +6,7 @@ Personal Pi extension by [elemount](https://github.com/elemount). Hosted in a pu
 
 ## Install
 
-Requires Pi, Git, and Vim on macOS or Linux. No build step or runtime npm dependencies.
+Requires Pi, Git, and console Vim on macOS, Linux, native Windows, or inside WSL. No build step or runtime npm dependencies.
 
 ```bash
 pi install git:github.com/elemount/reply-to-ai
@@ -24,6 +24,44 @@ Press **Ctrl+Alt+R** in Pi to review the latest AI reply immediately (the same a
 The extension is named `reply-to-ai`; its command remains `/re`. Keep using `/re` arguments to select earlier replies, files, and Git patches. It requires interactive terminal mode and an idle agent with no queued messages.
 
 If you previously copied this extension into `~/.pi/agent/extensions/reply-to-ai`, move that manual copy outside the `extensions` directory before reloading. Otherwise the manual and package-installed copies will both load.
+
+### Native Windows (PowerShell)
+
+Install Git and native console Vim if needed:
+
+```powershell
+winget install --id Git.Git --exact
+winget install --id Vim.Vim --exact
+pi install git:github.com/elemount/reply-to-ai
+```
+
+Restart the terminal after installation so PATH changes take effect. The extension searches for `vim.exe` on PATH and in common Vim installation directories (Program Files, per-user Programs, Scoop, and Chocolatey's tools directory).
+
+If Vim is installed elsewhere, set its executable path before starting Pi; spaces in the path are supported:
+
+```powershell
+$env:PI_REVIEW_EDITOR = 'C:\Program Files\Vim\vim91\vim.exe' # Adjust the version directory.
+pi
+```
+
+Use **console `vim.exe`**, not GUI `gvim.exe` or Git Bash's MSYS Vim. Batch wrappers (`.cmd` / `.bat`) are not supported; the editor is launched directly without a shell. Git commands in patch headers and large-file search commands are formatted for PowerShell on native Windows.
+
+### WSL
+
+Run the Linux versions of **Node/Pi, Git, and Vim inside the same WSL distribution**. Do not point a WSL Pi installation at Windows `vim.exe`.
+
+```bash
+sudo apt update
+sudo apt install git vim
+pi install git:github.com/elemount/reply-to-ai
+# Optional, if Vim is not found:
+export PI_REVIEW_EDITOR=/usr/bin/vim
+pi
+```
+
+Use Linux paths, including `/mnt/c/...` for files on a Windows drive. To translate a Windows path, run `wslpath -u 'C:\Users\you\project'` in the WSL shell and use the result in `/re @...`. Windows-style paths are not automatically converted.
+
+Ctrl+Alt+R remains the shortcut on both Windows and WSL. If the terminal or desktop intercepts it, forward the key combination to Pi or use `/re` directly. No Windows or WSL CI environment is installed by this repository.
 
 ## Update or remove
 
@@ -76,11 +114,11 @@ For PRs, the extension tries the local `origin/HEAD` reference first, then `orig
 
 ### File references
 
-Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to the working directory, absolute, or start with `~/`. Quote paths with spaces, e.g. `/re @"docs/design notes.md"`. One command reviews one file; the entire text after `@` is treated as the path, with no shell expansion.
+Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to the working directory, absolute, or start with `~/` (`~\` also works on native Windows). Windows drive paths and UNC paths use the native Windows filesystem; in WSL use Linux paths such as `/mnt/c/...`. Quote paths with spaces, e.g. `/re @"docs/design notes.md"`. One command reviews one file; the entire text after `@` is treated as the path, with no shell expansion.
 
 The extension reads a regular UTF-8 text file and opens a private temporary copy. The original is never opened for writing by the extension, including on save, cancellation, or editor failure. Empty files and read-only sources are supported. Directories, binary/non-UTF-8 files, and files over 32 MiB are rejected. Symlinks resolve to the actual source path.
 
-The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 8 KiB rule as other targets.
+The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). Scratch copies use UTF-8 and LF line endings, including when the original uses CRLF; the original is not rewritten. The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 8 KiB rule as other targets.
 
 ### What is the merge base?
 
@@ -96,7 +134,7 @@ Here `B` is the merge base. A PR review compares `B` with `F`, showing the featu
 
 Commit and PR reviews exclude uncommitted changes. Root commits are compared with the empty tree; merge commits with their first parent. `/re diff` excludes untracked files and requires an existing `HEAD`.
 
-Git patches open as `.diff` snapshots with diff highlighting and repository/commit metadata. The header includes `# Generated with:` followed by the Git command that produced the patch, including the repository path, resolved commit hashes, and diff options. PR snapshots also record `# Merge-base command:`. These commands describe the saved snapshot; working-tree output can change as files are edited.
+Git patches open as `.diff` snapshots with diff highlighting and repository/commit metadata. The header includes `# Generated with:` followed by the Git command that produced the patch, including the repository path, resolved commit hashes, and diff options. A `# Command shell:` header identifies PowerShell on native Windows or POSIX sh on macOS/Linux/WSL. PR snapshots also record `# Merge-base command:`. These commands describe the saved snapshot; working-tree output can change as files are edited.
 
 Both inline and large-file patch prompts explicitly instruct the AI to read the header, inspect the current repository files, and implement comments in those real files. **The review snapshot is reference material, not an edit target; the AI must not edit or apply it.**
 
@@ -153,17 +191,17 @@ Original reply. @@ Add an example.
 
 CDATA preserves code, XML tags, and arbitrary user text without confusing boundaries. Literal `]]>` sequences are safely split across CDATA sections. Large-file prompts keep the same `<reply>`, `<patch>`, or `<file>` outer tag and use `<annotated_file>`, `<comments_file>`, and `<search_command>` elements instead. `<annotated_file>` is the saved source text with your comments, not a code file the AI should edit directly.
 
-Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` (directory mode `0700`, file mode `0600`). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
+Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` (POSIX directory mode `0700`, file mode `0600`; Windows uses the temporary directory's inherited ACLs). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
 
 ## Editor
 
-Only **vim** is selected by default. To specify its executable path, without arguments:
+Only **vim** / native Windows **vim.exe** is selected by default. To specify its executable path, without arguments:
 
 ```bash
 PI_REVIEW_EDITOR=/usr/bin/vim pi
 ```
 
-Your Vim configuration is retained. Modelines, swap, persistent undo, and backup files are disabled for the review. This is independent of Pi's `externalEditor` setting and Ctrl+G.
+Your Vim configuration is retained. Modelines, swap, persistent undo, and backup files are disabled for the review. The temporary Vim session uses UTF-8 so Unicode source text and file paths work consistently. This is independent of Pi's `externalEditor` setting and Ctrl+G.
 
 ## Tests
 
@@ -171,4 +209,4 @@ Your Vim configuration is retained. Modelines, swap, persistent undo, and backup
 npm test
 ```
 
-Requires Node.js 22.19+ for native TypeScript type stripping and Git for local-repository tests. Real Vim tests are skipped if Vim is unavailable. Git tests use disposable local repositories and never contact a remote.
+The existing regression suite runs on macOS/Linux with Node.js 22.19+ and Git. Real Vim tests are skipped if Vim is unavailable. Git tests use disposable local repositories and never contact a remote. No new native Windows or WSL test jobs are configured.
