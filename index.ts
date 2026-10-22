@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { INLINE_REVIEW_BYTES, assistantText, assistantTextRange, newComments, replyRangeDocument, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
+import { INLINE_REVIEW_BYTES, assistantText, assistantTextRange, chatHistoryForReview, newComments, replyRangeDocument, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
 import { editReview, type SavedReview } from "./editor.ts";
 import { fileReview } from "./file.ts";
 import { gitReview, parseReviewTarget, REVIEW_USAGE, type ReviewTarget } from "./git.ts";
@@ -73,6 +73,7 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 						: "No Git changes to review.", "info");
 					return;
 				}
+				if (tag === "reply" || tag === "replies") original = chatHistoryForReview(original);
 				saved = await editReview(original, ctx, { patch: tag === "patch", extension: sourceFile ? extname(sourceFile) : undefined });
 				if (saved === undefined) {
 					ctx.ui.notify("Review cancelled; nothing sent.", "info");

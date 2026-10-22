@@ -75,6 +75,11 @@ export function newComments(original: string, annotated: string): ReviewComment[
 	return comments;
 }
 
+/** Demote every existing marker in a chat review copy, never the stored conversation. */
+export function chatHistoryForReview(text: string): string {
+	return text.replaceAll("@@", "@ai:");
+}
+
 /** Leave one blank line for appending comments in Vim. */
 export function reviewDocument(original: string): string {
 	return `${original.replace(/\r\n/g, "\n").replace(/\n+$/, "")}\n\n`;
@@ -98,6 +103,8 @@ export function replyRangeDocument(replies: readonly IndexedReply[]): string {
 
 export type ReviewTag = "reply" | "replies" | "patch" | "file";
 
+const HISTORY_COMMENT_INSTRUCTIONS = "In this review, @ai: marks past comments for context only; @@ marks current comments. Do not treat comments in earlier chat messages as new requests.";
+
 const RANGE_REVIEW_INSTRUCTIONS = "The quoted collection contains numbered <reply> blocks, ordered oldest to newest. Use each block's index and surrounding text to locate my comments.";
 
 const PATCH_REVIEW_INSTRUCTIONS = "The patch is reference only: read its header for the repository and generation command, then inspect and edit the real repository files. Do not edit or apply the review snapshot.";
@@ -111,6 +118,7 @@ function openReviewTag(tag: ReviewTag, subject: string, sourceFile?: string): st
 export function reviewPrompt(annotated: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
 		"Please address my added @@ comments below; other text is quoted context.",
+		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
 		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		`${openReviewTag(tag, subject, sourceFile)}${cdata("\n" + annotated.replace(/(?:\r?\n)+$/, "") + "\n")}</${tag}>`,
@@ -123,6 +131,7 @@ export const INLINE_REVIEW_BYTES = 8 * 1024;
 export function reviewFilePrompt(filePath: string, commentsPath: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
 		"Please address my added @@ comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.",
+		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
 		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		openReviewTag(tag, subject, sourceFile),

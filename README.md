@@ -163,6 +163,17 @@ Original text @@ First comment @@ Second comment
 
 A comment ends at the next `@@` marker or the end of its line. Empty comments and unchanged markers from the original document do not count as new comments. User-authored text can be in any language; plugin messages and prompts are in English.
 
+### Historical versus current chat comments
+
+For chat reviews (`/re`, numeric indexes, ranges, and Ctrl+Alt+R), **every existing `@@` in the selected history is changed to `@ai:` in the review copy before Vim opens**, including inline references, old comments, and code examples. Stored session messages are not modified.
+
+- `@ai:` means a past comment or historical context, not a new request.
+- `@@` means a current comment you add in this review.
+
+Both inline and large-file prompts explicitly explain this distinction and tell the AI not to treat comments from earlier chat messages as new requests. The conversion happens only before editing, so newly added `@@` comments stay current. Editing only historical `@ai:` text does not submit a new review.
+
+File references and Git patches are not rewritten: their existing markers and diff hunk headers remain intact, and existing source markers are still excluded from new-comment detection.
+
 ### Review-buffer shortcuts
 
 In Normal mode:

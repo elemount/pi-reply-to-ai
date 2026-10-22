@@ -109,7 +109,8 @@ test("only @@ marks comments; REPLY: and other prefixes are ordinary text", () =
 test("small prompt puts annotated text directly in a reply tag without a comment index", () => {
 	const document = "\u539f\u6587\n@@ \u6279\u6ce8";
 	assert.equal(reviewPrompt(document + "\n"), [
-		"Please address my added @@ comments below; other text is quoted context.", "",
+		"Please address my added @@ comments below; other text is quoted context.",
+		"In this review, @ai: marks past comments for context only; @@ marks current comments. Do not treat comments in earlier chat messages as new requests.", "",
 		'<reply subject="your latest response"><![CDATA[', document,
 		']]></reply>',
 	].join("\n"));
@@ -380,7 +381,7 @@ test("grep command safely quotes paths containing spaces and single quotes", () 
 		const command = /<search_command><!\[CDATA\[([\s\S]*?)\]\]><\/search_command>/.exec(prompt)[1].replace(/^rg /, "grep ");
 		const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
 		assert.equal(result.status, 0); assert.match(result.stdout, /1:Original @@ Comment/);
-		assert.equal(prompt.split("\n").length, 7);
+		assert.equal(prompt.split("\n").length, 8);
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -400,7 +401,8 @@ test("@file reviews open private copies outside Git, identify the source, and le
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
 	try {
 		for (const [name, content, extension] of [["source & name.ts", "export const answer = 42;\n", "ts"],
-			["empty.txt", "", "txt"], ["no-extension", "Text\n", "txt"]]) {
+			["empty.txt", "", "txt"], ["no-extension", "Text\n", "txt"],
+			["markers.md", "Original @@ marker\n@ai: literal text\n", "md"]]) {
 			const source = join(directory, name); writeFileSync(source, content); chmodSync(source, 0o444);
 			await fakeEditor("submit", async (invocation) => {
 				const h = harness([]); h.ctx.cwd = directory; await h.command(`@"${name}"`);
@@ -411,6 +413,7 @@ test("@file reviews open private copies outside Git, identify the source, and le
 				assert.match(prompt, /edit that original file, not the review snapshot/);
 				assert.ok(invocation().file.endsWith(`editing.${extension}`));
 				assert.equal(invocation().initialContent, reviewDocument(content));
+				assert.doesNotMatch(prompt, /@ai: marks past comments/);
 				assert.equal(readFileSync(source, "utf8"), content);
 				assert.equal(statSync(source).mode & 0o777, 0o444);
 				assert.equal(existsSync(dirname(invocation().saved)), false);
@@ -457,6 +460,70 @@ test("file cancellation, unchanged reviews, and editor failure never touch the s
 			await h.command(); assert.equal(h.sent.length, 1);
 		});
 	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("single replies and the shortcut demote past markers before editing without changing stored history", async () => {
+	const text = "Original @@ Add an example\n```\n@@ inline@@example\n```\n@ai: existing history";
+	const messages = [assistant(text)]; const original = structuredClone(messages);
+	for (const action of [h => h.command(), h => h.command("0"), h => h.shortcut()]) {
+		await fakeEditor("submit", async (invocation) => {
+			const h = harness(messages); await action(h);
+			assert.equal(invocation().initialContent, reviewDocument(text.replaceAll("@@", "@ai:")));
+			assert.doesNotMatch(invocation().initialContent, /@@/);
+			assert.equal(h.sent.length, 1);
+			assert.match(h.sent[0][0], /@ai: marks past comments for context only/);
+			assert.match(h.sent[0][0], /Original @ai: Add an example/);
+			assert.match(h.sent[0][0], /@@ Add an example/);
+			assert.deepEqual(messages, original);
+		});
+	}
+});
+
+test("ranges demote every past marker while keeping current comments and reply indexes", async () => {
+	const messages = [assistant("older @@ old comment"), assistant("latest @@ old comment @@ another")];
+	const original = structuredClone(messages);
+	await fakeEditor("submit", async (invocation) => {
+		const h = harness(messages); await h.command("0-1");
+		const initial = invocation().initialContent;
+		assert.doesNotMatch(initial, /@@/);
+		assert.match(initial, /older @ai: old comment/);
+		assert.match(initial, /latest @ai: old comment @ai: another/);
+		assert.ok(initial.indexOf('<reply index="1">') < initial.indexOf('<reply index="0">'));
+		assert.equal(h.sent.length, 1);
+		assert.match(h.sent[0][0], /@@ Add an example/);
+		assert.match(h.sent[0][0], /@@ marks current comments/);
+		assert.deepEqual(messages, original);
+	});
+});
+
+test("large chat collections keep historical markers out of the current comment index", async () => {
+	await fakeEditor("submit", async (invocation) => {
+		const h = harness([assistant("older @@ old comment\n" + "x".repeat(9000)), assistant("latest @@ another past comment")]);
+		await h.command("0-1");
+		const { saved } = invocation();
+		try {
+			assert.equal(h.sent.length, 1);
+			assert.match(h.sent[0][0], /@ai: marks past comments for context only/);
+			const content = readFileSync(saved, "utf8");
+			assert.match(content, /older @ai: old comment/);
+			assert.match(content, /latest @ai: another past comment/);
+			assert.equal((content.match(/@@/g) ?? []).length, 2);
+			const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
+			assert.deepEqual(comments.map(comment => comment.text), ["Add an example", "Explain edge cases"]);
+		} finally { rmSync(dirname(saved), { recursive: true, force: true }); }
+	});
+});
+
+test("unchanged history with past markers never sends a new review", async () => {
+	for (const args of ["0", "0-1"]) {
+		await fakeEditor("unchanged", async (invocation) => {
+			const h = harness([assistant("older @@ old"), assistant("latest @@ old")]);
+			await h.command(args);
+			assert.doesNotMatch(invocation().initialContent, /@@/);
+			assert.equal(h.sent.length, 0);
+			assert.match(h.notices[0][0], /No new @@ comments/);
+		});
+	}
 });
 
 test("0-10 opens eleven numbered replies oldest first and submits one review", async () => {
@@ -611,9 +678,11 @@ test("commit target opens a .diff snapshot even without an AI message and sends 
 test("unchanged patch hunk headers do not trigger a response", async () => {
 	await withRepository(async ({ cwd, write, commit }) => {
 		write("example.txt", "root content\n"); commit();
-		await fakeEditor("unchanged", async () => {
+		await fakeEditor("unchanged", async (invocation) => {
 			const h = harness(); h.ctx.cwd = cwd;
 			await h.command("commit");
+			assert.match(invocation().initialContent, /@@ -/);
+			assert.doesNotMatch(invocation().initialContent, /@ai:/);
 			assert.equal(h.sent.length, 0);
 			assert.match(h.notices[0][0], /No new @@ comments/);
 		});
