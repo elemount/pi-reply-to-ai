@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { INLINE_REVIEW_BYTES, assistantText, newComments, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
+import { INLINE_REVIEW_BYTES, assistantText, assistantTextRange, newComments, replyRangeDocument, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
 import { editReview, type SavedReview } from "./editor.ts";
 import { fileReview } from "./file.ts";
 import { gitReview, parseReviewTarget, REVIEW_USAGE, type ReviewTarget } from "./git.ts";
@@ -11,9 +11,10 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 	let reviewing = false;
 
 	const reviewCommand = {
-		description: "Annotate an AI reply, file, or Git patch: /re [N | @file | c [rev] | p [base] | d]",
+		description: "Annotate AI replies, files, or Git patches: /re [N | N-M | @file | c [rev] | p [base] | d]",
 		getArgumentCompletions: (prefix: string) => {
-			const items = ["0", "1", "2", "message", "commit", "c", "pr", "p", "diff", "d", "help"]
+			if (/^\d+-\d+$/.test(prefix)) return [{ value: prefix, label: prefix }];
+			const items = ["0", "1", "2", "0-4", "0-9", "0-10", "message", "commit", "c", "pr", "p", "diff", "d", "help"]
 				.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
 			return items.length ? items : null;
 		},
@@ -56,6 +57,11 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 					original = assistantText(ctx.sessionManager.buildSessionContext().messages, target.offset);
 					subject = `AI response ${target.offset} (0 = latest)`;
 					tag = "reply";
+				} else if (target.kind === "range") {
+					const replies = assistantTextRange(ctx.sessionManager.buildSessionContext().messages, target.start, target.end);
+					original = replyRangeDocument(replies);
+					subject = `AI responses ${target.start}-${target.end} (0 = latest), oldest first`;
+					tag = "replies";
 				} else {
 					original = await gitReview(ctx.cwd, target);
 					subject = "this Git patch";

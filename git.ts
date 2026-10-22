@@ -2,15 +2,22 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { commandShell, formatShellCommand } from "./platform.ts";
 
-export const REVIEW_USAGE = "Usage: /re [N | @file | message [N] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
+export const REVIEW_USAGE = "Usage: /re [N | N-M | @file | message [N or N-M] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
 export type ReviewTarget =
 	| { kind: "message"; offset: number }
+	| { kind: "range"; start: number; end: number }
 	| { kind: "file"; path: string }
 	| { kind: "commit"; revision: string }
 	| { kind: "pr"; base?: string }
 	| { kind: "diff" };
 
 function messageTarget(value: string): ReviewTarget {
+	const range = /^(\d+)-(\d+)$/.exec(value);
+	if (range) {
+		const start = Number(range[1]), end = Number(range[2]);
+		if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end) throw new Error(REVIEW_USAGE);
+		return { kind: "range", start, end };
+	}
 	if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(REVIEW_USAGE);
 	return { kind: "message", offset: Number(value) };
 }
@@ -29,7 +36,7 @@ export function parseReviewTarget(args: string): ReviewTarget {
 	const [kind = "message", ref, ...extra] = input.split(/\s+/).filter(Boolean);
 	if (extra.length) throw new Error(REVIEW_USAGE);
 	if (kind === "message") return messageTarget(ref ?? "0");
-	if (/^\d+$/.test(kind) && !ref) return messageTarget(kind);
+	if (/^\d+(?:-\d+)?$/.test(kind) && !ref) return messageTarget(kind);
 	if (kind === "commit" || kind === "c") return { kind: "commit", revision: ref ?? "HEAD" };
 	if (kind === "pr" || kind === "p") return { kind: "pr", base: ref };
 	if ((kind === "diff" || kind === "d") && !ref) return { kind: "diff" };
@@ -80,7 +87,7 @@ function gitCommand(cwd: string, args: string[]): string {
 }
 
 /** Generate a read-only snapshot of a Git patch; no checkout, fetch, or index changes. */
-export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "file" }>): Promise<string | undefined> {
+export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "range" | "file" }>): Promise<string | undefined> {
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
 	const header = [`# Repository: ${JSON.stringify(root)}`, `# Command shell: ${commandShell()}`];
 	let patchArgs: string[];

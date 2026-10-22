@@ -7,9 +7,7 @@ export interface MessageLike {
 	stopReason?: string;
 }
 
-/** Select an AI text reply by recency: 0 = latest. Ignore user/tool/thinking-only messages. */
-export function assistantText(messages: readonly MessageLike[], offset = 0): string | undefined {
-	if (!Number.isSafeInteger(offset) || offset < 0) return undefined;
+function* aiTextReplies(messages: readonly MessageLike[]): Generator<string> {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
@@ -18,9 +16,36 @@ export function assistantText(messages: readonly MessageLike[], offset = 0): str
 			.map((part) => part.text)
 			.join("")
 			.trim();
-		if (text && offset-- === 0) return text;
+		if (text) yield text;
 	}
+}
+
+/** Select an AI text reply by recency: 0 = latest. Ignore user/tool/thinking-only messages. */
+export function assistantText(messages: readonly MessageLike[], offset = 0): string | undefined {
+	if (!Number.isSafeInteger(offset) || offset < 0) return undefined;
+	for (const text of aiTextReplies(messages)) if (offset-- === 0) return text;
 	return undefined;
+}
+
+export interface IndexedReply {
+	index: number;
+	text: string;
+}
+
+/** Inclusive indexes, returned oldest first. Missing replies are never silently omitted. */
+export function assistantTextRange(messages: readonly MessageLike[], start: number, end: number): IndexedReply[] {
+	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
+		throw new Error("Invalid AI reply range; use nonnegative integer indexes with start <= end.");
+	}
+	const selected: IndexedReply[] = [];
+	let index = 0;
+	for (const text of aiTextReplies(messages)) {
+		if (index >= start) selected.push({ index, text });
+		if (index === end) return selected.reverse();
+		index++;
+	}
+	if (!index) throw new Error("No AI text replies are available.");
+	throw new Error(`Reply range ${start}-${end} is unavailable. Available AI reply indexes: 0-${index - 1} (0 = latest).`);
 }
 
 export interface ReviewComment {
@@ -64,7 +89,16 @@ function cdata(value: string): string {
 	return `<![CDATA[${value.replaceAll("]]>", "]]]]><![CDATA[>")}]]>`;
 }
 
-export type ReviewTag = "reply" | "patch" | "file";
+/** Editable collection with independently numbered, safely quoted reply sections. */
+export function replyRangeDocument(replies: readonly IndexedReply[]): string {
+	return replies.map(({ index, text }) =>
+		`<reply index="${index}">${cdata("\n" + text.replace(/\r\n/g, "\n") + "\n")}</reply>`
+	).join("\n\n");
+}
+
+export type ReviewTag = "reply" | "replies" | "patch" | "file";
+
+const RANGE_REVIEW_INSTRUCTIONS = "The quoted collection contains numbered <reply> blocks, ordered oldest to newest. Use each block's index and surrounding text to locate my comments.";
 
 const PATCH_REVIEW_INSTRUCTIONS = "The patch is reference only: read its header for the repository and generation command, then inspect and edit the real repository files. Do not edit or apply the review snapshot.";
 
@@ -77,7 +111,7 @@ function openReviewTag(tag: ReviewTag, subject: string, sourceFile?: string): st
 export function reviewPrompt(annotated: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
 		"Please address my added @@ comments below; other text is quoted context.",
-		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : []),
+		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		`${openReviewTag(tag, subject, sourceFile)}${cdata("\n" + annotated.replace(/(?:\r?\n)+$/, "") + "\n")}</${tag}>`,
 	].join("\n");
@@ -89,7 +123,7 @@ export const INLINE_REVIEW_BYTES = 8 * 1024;
 export function reviewFilePrompt(filePath: string, commentsPath: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
 		"Please address my added @@ comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.",
-		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : []),
+		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
 		openReviewTag(tag, subject, sourceFile),
 		`<annotated_file>${xmlEscape(filePath)}</annotated_file>`,

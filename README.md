@@ -97,6 +97,9 @@ To persistently use a working clone instead of the Git-managed installation, rem
 | `/re`, `/re 0`, or `/re message` | Latest AI text reply (the default) |
 | `/re 1` | Previous AI text reply |
 | `/re N` or `/re message N` | AI text reply N positions back, with 0 = latest |
+| `/re 0-10` | Inclusive indexes 0 through 10: eleven replies, oldest first |
+| `/re 3-7` | Inclusive indexes 3 through 7: five replies, ordered 7 to 3 |
+| `/re message 0-9` | Equivalent range form; the ten most recent AI text replies |
 | `/re @src/main.ts` | A private copy of a file, leaving the original untouched while annotating |
 | `/re @"path with spaces.md"` | Same, using Pi's quoted file-reference format |
 | `/re commit` or `/re c` | Latest commit (`HEAD`), compared with its first parent |
@@ -107,6 +110,14 @@ To persistently use a working clone instead of the Git-managed installation, rem
 | `/re help` | Usage |
 
 Message indexes count **AI text replies only**, newest first, in the active session context. User messages, tool results, and thinking/tool-only assistant messages do not count. Indexes must be nonnegative integers; unavailable indexes report a message rather than silently opening a different reply. Replies no longer present after compaction are unavailable.
+
+### Reply ranges
+
+`/re N-M` selects an **inclusive** interval with `N <= M`. Since index 0 is the latest reply, `/re 0-10` includes **eleven** replies; use `/re 0-9` for the most recent ten. `/re message N-M` is also accepted.
+
+The temporary file orders the selected replies **oldest to newest**, so `/re 0-10` displays indexes 10 down to 0. Each reply has its own `<reply index="N">` section with safely quoted text. Keep the index labels intact and add `@@` comments near the relevant text, then save and quit to submit the whole review once.
+
+The **8 KiB limit applies to the entire saved collection**, including section markup and comments, not to each reply separately. Large collections remain on disk and are referenced by a short prompt. Unavailable ranges report the available indexes instead of silently returning fewer replies. Invalid or reversed ranges are rejected before opening Vim. Ctrl+Alt+R still reviews only the latest reply.
 
 The long Git command names remain valid; `c`, `p`, and `d` are aliases for `commit`, `pr`, and `diff`.
 
@@ -181,7 +192,7 @@ The limit is **8 KiB of UTF-8 document bytes**, including trailing blank lines.
 - **Up to 8 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
 - **Over 8 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
 
-The outer tag identifies the source: `<reply>` for AI replies, `<patch>` for generated Git patches, or `<file source="...">` for file references. Annotated text goes directly inside it, without an extra wrapper:
+The outer tag identifies the source: `<reply>` for one AI reply, `<replies>` for a reply range, `<patch>` for generated Git patches, or `<file source="...">` for file references. A range prompt quotes the collection of numbered `<reply>` sections and tells the AI to use their indexes and surrounding text to locate comments. Annotated text goes directly inside it, without an extra wrapper:
 
 ```xml
 <reply subject="AI response 1 (0 = latest)"><![CDATA[
@@ -189,7 +200,7 @@ Original reply. @@ Add an example.
 ]]></reply>
 ```
 
-CDATA preserves code, XML tags, and arbitrary user text without confusing boundaries. Literal `]]>` sequences are safely split across CDATA sections. Large-file prompts keep the same `<reply>`, `<patch>`, or `<file>` outer tag and use `<annotated_file>`, `<comments_file>`, and `<search_command>` elements instead. `<annotated_file>` is the saved source text with your comments, not a code file the AI should edit directly.
+CDATA preserves code, XML tags, and arbitrary user text without confusing boundaries. Literal `]]>` sequences are safely split across CDATA sections. Large-file prompts keep the same `<reply>`, `<replies>`, `<patch>`, or `<file>` outer tag and use `<annotated_file>`, `<comments_file>`, and `<search_command>` elements instead. `<annotated_file>` is the saved source text with your comments, not a code file the AI should edit directly.
 
 Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` (POSIX directory mode `0700`, file mode `0600`; Windows uses the temporary directory's inherited ACLs). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
 

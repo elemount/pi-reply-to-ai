@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import extension from "../index.ts";
-import { INLINE_REVIEW_BYTES, assistantText, newComments, reviewDocument, reviewFilePrompt, reviewPrompt, reviewVimScript } from "../core.ts";
+import { INLINE_REVIEW_BYTES, assistantText, assistantTextRange, newComments, replyRangeDocument, reviewDocument, reviewFilePrompt, reviewPrompt, reviewVimScript } from "../core.ts";
 import { findReviewEditor } from "../editor.ts";
 import { withRepository } from "./fixtures/repository.mjs";
 
@@ -392,6 +392,7 @@ test("command help, invalid arguments and target completions do not open an edit
 	const completions = h.commands.get("re").getArgumentCompletions;
 	assert.deepEqual(completions("c"), [{ value: "commit", label: "commit" }, { value: "c", label: "c" }]);
 	assert.deepEqual(completions("1"), [{ value: "1", label: "1" }]);
+	assert.deepEqual(completions("0-1"), [{ value: "0-1", label: "0-1" }]);
 	assert.equal(completions("commit HEAD"), null);
 });
 
@@ -456,6 +457,88 @@ test("file cancellation, unchanged reviews, and editor failure never touch the s
 			await h.command(); assert.equal(h.sent.length, 1);
 		});
 	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("0-10 opens eleven numbered replies oldest first and submits one review", async () => {
+	const messages = Array.from({ length: 11 }, (_, i) => assistant(`Reply ${10 - i}`));
+	messages.splice(3, 0, { role: "user", content: "user message" });
+	messages.push({ role: "toolResult", content: [{ type: "text", text: "tool result" }] });
+	await fakeEditor("submit", async (invocation) => {
+		const h = harness(messages); await h.command("0-10");
+		const initial = invocation().initialContent;
+		assert.equal(initial, reviewDocument(replyRangeDocument(assistantTextRange(messages, 0, 10))));
+		assert.equal((initial.match(/<reply index="\d+">/g) ?? []).length, 11);
+		for (let index = 10; index > 0; index--) {
+			assert.ok(initial.indexOf(`<reply index="${index}">`) < initial.indexOf(`<reply index="${index - 1}">`));
+		}
+		assert.ok(initial.includes('\nReply 10\n')); assert.ok(initial.includes('\nReply 0\n'));
+		assert.doesNotMatch(initial, /user message|tool result/);
+		assert.equal(h.sent.length, 1);
+		assert.ok(h.sent[0][0].includes('<replies subject="AI responses 0-10 (0 = latest), oldest first">'));
+		assert.match(h.sent[0][0], /numbered <reply> blocks/);
+		assert.match(h.sent[0][0], /Add an example/);
+		assert.equal(existsSync(dirname(invocation().saved)), false);
+	});
+});
+
+test("subranges and message N-M select only the requested replies", async () => {
+	const messages = Array.from({ length: 10 }, (_, i) => assistant(`text-${9 - i}`));
+	for (const args of ["3-7", "message 3-7"]) {
+		await fakeEditor("submit", async (invocation) => {
+			const h = harness(messages); await h.command(args);
+			const initial = invocation().initialContent;
+			assert.equal((initial.match(/<reply index="\d+">/g) ?? []).length, 5);
+			assert.ok(initial.includes('\ntext-7\n')); assert.ok(initial.includes('\ntext-3\n'));
+			assert.doesNotMatch(initial, /text-[01289]/);
+			assert.equal(h.sent.length, 1);
+		});
+	}
+});
+
+test("collection size, not individual reply size, controls the 8 KiB file-reference path", async () => {
+	const older = "older " + "x".repeat(4500), latest = "latest " + "y".repeat(4500);
+	assert.ok(Buffer.byteLength(older) < INLINE_REVIEW_BYTES && Buffer.byteLength(latest) < INLINE_REVIEW_BYTES);
+	await fakeEditor("submit", async (invocation) => {
+		const h = harness([assistant(older), assistant(latest)]); await h.command("0-1");
+		const { saved } = invocation();
+		try {
+			assert.equal(h.sent.length, 1);
+			const prompt = h.sent[0][0];
+			assert.ok(prompt.includes('<replies subject="AI responses 0-1 (0 = latest), oldest first">'));
+			assert.ok(prompt.includes(saved)); assert.match(prompt, /<comments_file>/);
+			assert.doesNotMatch(prompt, /x{100}|y{100}/);
+			assert.ok(Buffer.byteLength(prompt) < INLINE_REVIEW_BYTES);
+			const content = readFileSync(saved, "utf8");
+			assert.ok(Buffer.byteLength(content) > INLINE_REVIEW_BYTES);
+			assert.ok(content.indexOf('<reply index="1">') < content.indexOf('<reply index="0">'));
+			const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
+			assert.equal(comments.length, 2); assert.equal(comments[0].text, "Add an example");
+		} finally { rmSync(dirname(saved), { recursive: true, force: true }); }
+	});
+});
+
+test("range cancellation and unchanged existing markers do not send", async () => {
+	for (const mode of ["cancel", "unchanged"]) {
+		await fakeEditor(mode, async (invocation) => {
+			const h = harness([assistant('older @@ existing ]]> <reply>'), assistant('latest @@ existing')]);
+			await h.command("0-1");
+			assert.equal(h.sent.length, 0);
+			assert.equal(existsSync(dirname(invocation().saved)), false);
+		});
+	}
+});
+
+test("unavailable ranges report available indexes, open no editor, and release the lock", async () => {
+	const h = harness([assistant("oldest"), assistant("middle"), assistant("latest")]);
+	for (const args of ["0-3", "3-7"]) {
+		await h.command(args);
+		assert.match(h.notices.at(-1)[0], /Available AI reply indexes: 0-2/);
+	}
+	assert.equal(h.lifecycle.length, 0); assert.equal(h.sent.length, 0);
+	const empty = harness([]); await empty.command("0-10");
+	assert.match(empty.notices[0][0], /No AI text replies are available/);
+	assert.equal(empty.lifecycle.length, 0);
+	await fakeEditor("submit", async () => { await h.command("0-2"); assert.equal(h.sent.length, 1); });
 });
 
 test("numeric targets select the requested AI reply without counting user/tool messages", async () => {
