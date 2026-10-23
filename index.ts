@@ -1,4 +1,4 @@
-/** reply-to-ai — /re annotates AI replies, private file copies, directories, and Git patches. */
+/** pi-reply-to-ai — /re annotates AI replies, private file copies, directories, and Git patches. */
 import { writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

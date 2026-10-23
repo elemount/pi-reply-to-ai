@@ -1,4 +1,4 @@
-# reply-to-ai
+# pi-reply-to-ai
 
 Annotate AI replies, private file copies, directories, or Git patches in **vim**. Save, then quit to send your comments back to the AI.
 
@@ -9,7 +9,7 @@ Personal Pi extension by [elemount](https://github.com/elemount). Hosted in a pu
 Requires Pi, Git, and console Vim on macOS, Linux, native Windows, or inside WSL. No build step or runtime npm dependencies.
 
 ```bash
-pi install git:github.com/elemount/reply-to-ai
+pi install git:github.com/elemount/pi-reply-to-ai
 ```
 
 In an existing Pi session:
@@ -21,7 +21,7 @@ In an existing Pi session:
 
 Press **Ctrl+Alt+R** in Pi to review the latest AI reply immediately (the same as `/re` or `/re 0`). The shortcut shares the command's busy checks, editor, save/cancel behavior, and duplicate-launch guard. Your terminal must pass the key combination through to Pi.
 
-The extension is named `reply-to-ai`; its command remains `/re`. Keep using `/re` arguments to select earlier replies, files, and Git patches. It requires interactive terminal mode and an idle agent with no queued messages.
+The extension is named `pi-reply-to-ai`; its command remains `/re`. Keep using `/re` arguments to select earlier replies, files, and Git patches. It requires interactive terminal mode and an idle agent with no queued messages.
 
 If you previously copied this extension into `~/.pi/agent/extensions/reply-to-ai`, move that manual copy outside the `extensions` directory before reloading. Otherwise the manual and package-installed copies will both load.
 
@@ -32,7 +32,7 @@ Install Git and native console Vim if needed:
 ```powershell
 winget install --id Git.Git --exact
 winget install --id Vim.Vim --exact
-pi install git:github.com/elemount/reply-to-ai
+pi install git:github.com/elemount/pi-reply-to-ai
 ```
 
 Restart the terminal after installation so PATH changes take effect. The extension searches for `vim.exe` on PATH and in common Vim installation directories (Program Files, per-user Programs, Scoop, and Chocolatey's tools directory).
@@ -53,7 +53,7 @@ Run the Linux versions of **Node/Pi, Git, and Vim inside the same WSL distributi
 ```bash
 sudo apt update
 sudo apt install git vim
-pi install git:github.com/elemount/reply-to-ai
+pi install git:github.com/elemount/pi-reply-to-ai
 # Optional, if Vim is not found:
 export PI_REVIEW_EDITOR=/usr/bin/vim
 pi
@@ -68,27 +68,38 @@ Ctrl+Alt+R remains the shortcut on both Windows and WSL. If the terminal or desk
 Update this extension, then run `/reload` in Pi:
 
 ```bash
-pi update git:github.com/elemount/reply-to-ai
+pi update git:github.com/elemount/pi-reply-to-ai
 ```
 
 Remove it:
 
 ```bash
-pi remove git:github.com/elemount/reply-to-ai
+pi remove git:github.com/elemount/pi-reply-to-ai
 ```
 
 Run `/reload` after removal as well. `pi list` shows your configured packages.
 
+### Migrating from the old repository name
+
+The repository was renamed from `elemount/reply-to-ai` to `elemount/pi-reply-to-ai`. GitHub redirects the old URL, but Pi identifies Git packages by URL. Replace the old package declaration rather than keeping both:
+
+```bash
+pi remove git:github.com/elemount/reply-to-ai
+pi install git:github.com/elemount/pi-reply-to-ai
+```
+
+Run `/reload` afterward. The `/re` command, Ctrl+Alt+R shortcut, and review behavior are unchanged.
+
 ## Local development
 
 ```bash
-gh repo clone elemount/reply-to-ai ~/src/reply-to-ai
-cd ~/src/reply-to-ai
+gh repo clone elemount/pi-reply-to-ai ~/repos/pi-reply-to-ai
+cd ~/repos/pi-reply-to-ai
 npm test
 pi --no-extensions -e ./index.ts
 ```
 
-To persistently use a working clone instead of the Git-managed installation, remove the Git package first and run `pi install ~/src/reply-to-ai`. Do not install both copies at once. Pi supplies the host API, which is declared as an optional peer dependency rather than bundled. No `npm install` is needed to run the tests.
+To persistently use a working clone instead of the Git-managed installation, remove the Git package first and run `pi install ~/repos/pi-reply-to-ai`. Do not install both copies at once. Pi supplies the host API, which is declared as an optional peer dependency rather than bundled. No `npm install` is needed to run the tests.
 
 ## Targets
 
