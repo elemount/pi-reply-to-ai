@@ -99,6 +99,26 @@ test("@@ comments work anywhere, with Unicode, CRLF, duplicates, and original di
 	]);
 });
 
+test("marker-free reviews return before splitting either document into lines", t => {
+	const original = "@@ old comment\n".repeat(10000), annotated = "no marker\n".repeat(10000);
+	const split = String.prototype.split;
+	t.mock.method(String.prototype, "split", function (...args) {
+		if (String(this) === original || String(this) === annotated) assert.fail("Marker-free review should not be parsed");
+		return Reflect.apply(split, this, args);
+	});
+	assert.deepEqual(newComments(original, annotated), []);
+});
+
+test("marker-free originals skip baseline parsing while current comment line numbers stay correct", t => {
+	const original = "plain context\r\n".repeat(10000);
+	const split = String.prototype.split;
+	t.mock.method(String.prototype, "split", function (...args) {
+		if (String(this) === original) assert.fail("Marker-free baseline should not be parsed");
+		return Reflect.apply(split, this, args);
+	});
+	assert.deepEqual(newComments(original, original + "@@ Current comment\r\n"), [{ line: 10001, text: "Current comment" }]);
+});
+
 test("only @@ marks comments; REPLY: and other prefixes are ordinary text", () => {
 	assert.deepEqual(newComments("Original", "Original\nREPLY: not a comment\nREVIEW: not a comment\n"), []);
 	assert.deepEqual(newComments("Original", "Original\n@@ Actual comment\nREPLY: ordinary text\n"), [
@@ -422,6 +442,26 @@ test("@file reviews open private copies outside Git, identify the source, and le
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("inline and unmarked file reviews skip comment parsing, including saved empty markers", async t => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
+	const split = String.prototype.split;
+	t.mock.method(String.prototype, "split", function (...args) {
+		if (String(this).includes("file_parsing_guard")) assert.fail("Inline/unmarked files only need a marker-presence check");
+		return Reflect.apply(split, this, args);
+	});
+	try {
+		for (const [content, sends] of [["file_parsing_guard\n", 0], ["file_parsing_guard @@ existing\n", 1], ["file_parsing_guard\n@@\n", 1]]) {
+			writeFileSync(join(directory, "source.txt"), content);
+			await fakeEditor("unchanged", async () => {
+				const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
+				assert.equal(h.sent.length, sends);
+				if (!sends) assert.match(h.notices[0][0], /No @@ comments/);
+				assert.equal(readFileSync(join(directory, "source.txt"), "utf8"), content);
+			});
+		}
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("large @file reviews preserve private copies and source references, not full inline contents", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
 	try {
@@ -435,6 +475,8 @@ test("large @file reviews preserve private copies and source references, not ful
 				assert.match(prompt, /<file subject="this file" source=/);
 				assert.match(prompt, /<annotated_file>/);
 				assert.ok(prompt.includes(saved)); assert.doesNotMatch(prompt, /source line/);
+				const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
+				assert.deepEqual(comments.map(comment => comment.text), ["Add an example", "Explain edge cases"]);
 				assert.match(readFileSync(saved, "utf8"), /@@ Add an example/);
 				assert.equal(readFileSync(source, "utf8"), content);
 			} finally { rmSync(dirname(saved), { recursive: true, force: true }); }

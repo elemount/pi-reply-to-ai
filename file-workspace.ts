@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { INLINE_REVIEW_BYTES, fileReviewSection, fileWorkspaceReferencePrompt, reviewDocument, reviewPrompt } from "./core.ts";
@@ -12,6 +12,7 @@ import { fileWorkspaceVimScript } from "./file-workspace-vim.ts";
 
 const execute = promisify(execFile);
 const MAX_FILES = 2000;
+const PROBE_CONCURRENCY = 8;
 const MAX_OPEN_BYTES = 64 * 1024 * 1024;
 const SKIP_DIRECTORIES = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", ".ssh", ".aws", ".gnupg", ".kube", ".pi"]);
 
@@ -86,6 +87,21 @@ async function likelyText(path: string): Promise<boolean> {
 	finally { await file.close(); }
 }
 
+async function directoryFile(root: string, path: string, workspace: string): Promise<string | undefined> {
+	if (skip(path)) return undefined;
+	const full = join(root, path);
+	if (!inside(root, full) || inside(workspace, full)) return undefined;
+	try {
+		const info = await lstat(full);
+		if (!info.isFile() || info.isSymbolicLink()) return undefined;
+		const canonical = await realpath(full);
+		return inside(root, canonical) && await likelyText(canonical) ? canonical : undefined;
+	} catch {
+		// Files may disappear or be unreadable while enumerating a directory.
+		return undefined;
+	}
+}
+
 export async function isReviewDirectory(cwd: string, path: string): Promise<boolean> {
 	return (await stat(resolveReviewPath(cwd, path))).isDirectory();
 }
@@ -110,7 +126,7 @@ export async function createFileWorkspace(paths: readonly string[], cwd: string)
 			const originalExtension = extname(source);
 			const extension = /^\.[a-zA-Z0-9_-]{1,16}$/.test(originalExtension) ? originalExtension : ".txt";
 			const stem = basename(source, originalExtension).replace(/[^\p{L}\p{N}._-]/gu, "_").slice(0, 60) || "file";
-			const folder = join(directory, "copies", String(id)); mkdirSync(folder, { recursive: true, mode: 0o700 });
+			const folder = join(directory, "copies", String(id));
 			const item = { id, source, root, copy: join(folder, stem + extension), saved: join(directory, "saved", `${id}.txt`), label: display(source) };
 			files.push(item); return item;
 		}
@@ -126,18 +142,16 @@ export async function createFileWorkspace(paths: readonly string[], cwd: string)
 			tree = true;
 			const node: TreeNode = { key: `root-${index}`, label: display(source) + "/", children: new Map() };
 			roots.push(node);
-			for (const path of await directoryPaths(source, join(directory, `git-scan-${index}`))) {
-				if (skip(path)) continue;
-				const full = join(source, path);
-				if (!inside(source, full) || inside(directory, full)) continue;
-				try {
-					const info = await lstat(full);
-					if (!info.isFile() || info.isSymbolicLink()) continue;
-					const canonical = await realpath(full);
-					if (!inside(source, canonical) || !(await likelyText(canonical))) continue;
+			const candidates = await directoryPaths(source, join(directory, `git-scan-${index}`));
+			for (let offset = 0; offset < candidates.length; offset += PROBE_CONCURRENCY) {
+				// Bound open handles and stop within one batch of the file limit. Commit in Git order, not completion order.
+				const batch = candidates.slice(offset, offset + PROBE_CONCURRENCY);
+				const checked = await Promise.all(batch.map(path => directoryFile(source, path, directory)));
+				for (const [position, canonical] of checked.entries()) {
+					if (!canonical) continue;
 					const item = add(canonical, source);
 					if (!item) continue;
-					const parts = relative(source, full).split(sep);
+					const parts = relative(source, join(source, batch[position])).split(sep);
 					let parent = node;
 					for (const part of parts.slice(0, -1)) {
 						let child = parent.children!.get(part);
@@ -145,9 +159,6 @@ export async function createFileWorkspace(paths: readonly string[], cwd: string)
 						parent = child;
 					}
 					parent.children!.set(parts.at(-1)!, { key: `file-${item.id}`, label: display(parts.at(-1)!), id: item.id });
-				} catch (error) {
-					if (files.length >= MAX_FILES) throw error;
-					// Files may disappear or be unreadable while enumerating a directory.
 				}
 			}
 		}
@@ -170,6 +181,7 @@ export async function createFileWorkspace(paths: readonly string[], cwd: string)
 			const content = reviewDocument(source.content);
 			const size = Buffer.byteLength(content);
 			if (copiedBytes + size > MAX_OPEN_BYTES) throw new Error("Open fewer or smaller files; review copies are limited to 64 MiB in total.");
+			mkdirSync(dirname(item.copy), { recursive: true, mode: 0o700 });
 			writeFileSync(item.copy + ".partial", content, { mode: 0o600 });
 			renameSync(item.copy + ".partial", item.copy);
 			item.source = source.path; copied.add(id); copiedBytes += size;

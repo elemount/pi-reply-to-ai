@@ -44,25 +44,30 @@ function! s:PathKey(path) abort
   return has('win32') || has('win64') ? tolower(path) : path
 endfunction
 
+" Normalize copy paths once; entering the tree or another unregistered buffer must not scan every file.
+let s:by_path = {}
+for item in s:files
+  let s:by_path[s:PathKey(item.copy)] = item.id
+endfor
+
 function! s:SetupBuffer() abort
   if exists('b:reply_to_ai_id')
     return
   endif
-  let current = s:PathKey(expand('%:p'))
-  for item in s:files
-    if current ==# s:PathKey(item.copy)
-      let b:reply_to_ai_id = item.id
-      let saved_cpo = &cpoptions
-      set cpoptions&vim
-      setlocal modifiable noreadonly
+  let id = get(s:by_path, s:PathKey(expand('%:p')), -1)
+  if id < 0
+    return
+  endif
+  let item = s:files[id]
+  let b:reply_to_ai_id = id
+  let saved_cpo = &cpoptions
+  set cpoptions&vim
+  setlocal modifiable noreadonly
 ${settings}
-      let &l:statusline = ' %<' . substitute(item.label, '%', '%%', 'g') . ' | Enter: comment | ,a: inline | :wqa send %=%l/%L '
+  let &l:statusline = ' %<' . substitute(item.label, '%', '%%', 'g') . ' | Enter: comment | ,a: inline | :wqa send %=%l/%L '
 ${mappings}
-      execute 'autocmd ReplyToAiFiles BufWritePost,FileWritePost,FileAppendPost <buffer=' . bufnr('%') . '> call ' . expand('<SID>') . 'Saved(' . bufnr('%') . ')'
-      let &cpoptions = saved_cpo
-      return
-    endif
-  endfor
+  execute 'autocmd ReplyToAiFiles BufWritePost,FileWritePost,FileAppendPost <buffer=' . bufnr('%') . '> call ' . expand('<SID>') . 'Saved(' . bufnr('%') . ')'
+  let &cpoptions = saved_cpo
 endfunction
 
 function! s:LoadCopy(id) abort

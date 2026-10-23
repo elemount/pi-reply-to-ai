@@ -137,7 +137,7 @@ The copy preserves a normal filename extension so Vim can detect its filetype (o
 
 `/re @a.ts @b.ts` opens one private copy per tab. Use **`gt` / `gT`** to switch tabs. Duplicate source paths are opened once. The status line identifies the original file.
 
-`/re @src/` opens a lightweight, read-only file tree on the left and a review pane on the right. In the tree, **Enter** expands/collapses a directory or opens a file. File contents are copied only when opened; unopened files are never submitted. **`:ReTree`** returns to or restores the tree. No Neo-tree/Neovim plugin is required.
+`/re @src/` opens a lightweight, read-only file tree on the left and a review pane on the right. In the tree, **Enter** expands/collapses a directory or opens a file. File contents and their private copy directories are created only when opened; unopened files are never submitted. **`:ReTree`** returns to or restores the tree. No Neo-tree/Neovim plugin is required.
 
 Git must be installed, but **neither the working directory nor the selected directory needs to be a Git repository**. Existing repositories use their Git file listing; ordinary directories use Git metadata inside the private temporary workspace to apply `.gitignore` rules. The extension never initializes `.git` in a source folder. Directory scans also skip common dependency/credential directories, `.env`/key files, symlinks, binary data, and oversized files. Explicit file references can select files hidden by directory filtering.
 
@@ -245,6 +245,12 @@ PI_REVIEW_EDITOR=/usr/bin/vim pi
 ```
 
 Your Vim configuration is retained. Modelines, swap, persistent undo, and backup files are disabled for the review. The temporary Vim session uses UTF-8 so Unicode source text and file paths work consistently. This is independent of Pi's `externalEditor` setting and Ctrl+G.
+
+## Performance
+
+Directory candidates are checked in batches of up to eight, keeping file handles bounded and stopping within one batch of the file-count limit. Results retain Git listing order regardless of probe completion order. Git ignore rules, path containment, symlink filtering, UTF-8 checks, and size limits remain in place.
+
+Vim builds a copy-path index once, so entering the tree or another unrelated buffer does not repeatedly resolve every candidate path. Marker-free reviews skip comment parsing; inline file reviews use only the `@@` presence check. Large single-file reviews still generate their comment index when needed.
 
 ## Tests
 

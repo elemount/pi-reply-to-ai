@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 import { createFileWorkspace } from "../file-workspace.ts";
@@ -36,6 +38,7 @@ test("non-repository directories honor .gitignore, skip binary/sensitive files, 
 			assert.equal(workspace.tree, true);
 			assert.equal(existsSync(join(root, ".git")), false);
 			assert.ok(workspace.files.every(file => !existsSync(file.copy)));
+			assert.equal(existsSync(join(workspace.directory, "copies")), false);
 			assert.ok(workspace.files.some(file => file.source.endsWith("a.ts")));
 			assert.ok(workspace.files.some(file => file.source.endsWith("b.ts")));
 			assert.ok(workspace.files.every(file => !/ignored\.txt|node_modules|binary\.dat|\.env$/.test(file.source)));
@@ -44,8 +47,73 @@ test("non-repository directories honor .gitignore, skip binary/sensitive files, 
 			assert.match(readFileSync(a.copy, "utf8"), /const a = 1;/);
 			assert.equal(readFileSync(join(root, "a.ts"), "utf8"), "const a = 1;\n");
 			assert.equal(workspace.files.filter(file => existsSync(file.copy)).length, 1);
+			assert.ok(workspace.files.every(file => existsSync(dirname(file.copy)) === (file.id === a.id)));
+			writeFileSync(a.copy, "@@ keep my edits\n"); await workspace.load(a.id);
+			assert.equal(readFileSync(a.copy, "utf8"), "@@ keep my edits\n");
 			await assert.rejects(workspace.load(9999), /Invalid review file selection/);
 		} finally { workspace.cleanup(); }
+	});
+});
+
+test("directory probing is bounded and assigns IDs in Git order rather than completion order", async t => {
+	await sources(async root => {
+		const names = Array.from({ length: 24 }, (_, index) => `file-${String(index).padStart(2, "0")}.ts`);
+		for (const name of names) writeFileSync(join(root, name), "export const a = 1;\n");
+		const original = fs.lstat;
+		let active = 0, peak = 0, calls = 0;
+		t.mock.method(fs, "lstat", async (...args) => {
+			active++; calls++; peak = Math.max(peak, active);
+			try {
+				const index = Number(basename(args[0]).match(/\d+/)[0]);
+				await sleep(8 - index % 8);
+				return await original(...args);
+			} finally { active--; }
+		});
+		syncBuiltinESMExports();
+		try {
+			const workspace = await createFileWorkspace([root], root);
+			try {
+				assert.ok(peak > 1); assert.ok(peak <= 8); assert.equal(calls, names.length); assert.equal(active, 0);
+				assert.deepEqual(workspace.files.map(file => basename(file.source)), names);
+				assert.deepEqual(workspace.files.map(file => file.id), names.map((_, index) => index));
+				assert.equal(existsSync(join(workspace.directory, "copies")), false);
+			} finally { workspace.cleanup(); }
+		} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+	});
+});
+
+test("directory probing stops within one batch of the file limit", async t => {
+	await sources(async root => {
+		for (let index = 0; index < 2016; index++) writeFileSync(join(root, `file-${String(index).padStart(4, "0")}.txt`), "text\n");
+		const original = fs.lstat; let calls = 0;
+		t.mock.method(fs, "lstat", (...args) => { calls++; return original(...args); });
+		syncBuiltinESMExports();
+		try {
+			await assert.rejects(createFileWorkspace([root], root), /More than 2000 reviewable files/);
+			assert.ok(calls > 2000 && calls <= 2008, `Unexpected probe count: ${calls}`);
+			assert.equal(existsSync(join(root, ".git")), false);
+		} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+	});
+});
+
+test("batched probing keeps encoding, symlink, size, and disappearing-file checks", async t => {
+	await sources(async base => {
+		const root = join(base, "project"); mkdirSync(root);
+		writeFileSync(join(base, "outside.txt"), "outside\n");
+		writeFileSync(join(root, "a.txt"), "safe\n");
+		writeFileSync(join(root, "invalid.txt"), Buffer.from([0xff]));
+		writeFileSync(join(root, "binary.txt"), Buffer.from([0]));
+		writeFileSync(join(root, "large.txt"), ""); truncateSync(join(root, "large.txt"), 33 * 1024 * 1024);
+		writeFileSync(join(root, "gone.txt"), "gone\n");
+		symlinkSync(join(base, "outside.txt"), join(root, "linked.txt"));
+		const original = fs.lstat;
+		t.mock.method(fs, "lstat", (...args) => basename(args[0]) === "gone.txt" ? Promise.reject(new Error("File disappeared")) : original(...args));
+		syncBuiltinESMExports();
+		try {
+			const workspace = await createFileWorkspace([root], root);
+			try { assert.deepEqual(workspace.files.map(file => basename(file.source)), ["a.txt"]); }
+			finally { workspace.cleanup(); }
+		} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 	});
 });
 

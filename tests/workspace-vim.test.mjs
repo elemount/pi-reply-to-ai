@@ -9,7 +9,7 @@ import { prepareFileWorkspaceReview } from "../file-workspace.ts";
 
 const installed = spawnSync("vim", ["--version"], { encoding: "utf8" }).status === 0;
 
-async function runWorkspace({ tree, commands, check }) {
+async function runWorkspace({ tree, commands, check, countPaths = false }) {
 	const root = mkdtempSync(join(tmpdir(), "pi-real-workspace-"));
 	const lifecycle = [], observed = {};
 	let result;
@@ -26,6 +26,11 @@ async function runWorkspace({ tree, commands, check }) {
 		const runner = async (editor, args, cwd) => {
 			const script = args[args.indexOf("-S") + 1];
 			const manifest = JSON.parse(readFileSync(join(dirname(script), "manifest.json"), "utf8"));
+			if (countPaths) {
+				const content = readFileSync(script, "utf8"), hook = "function! s:PathKey(path) abort\n";
+				assert.ok(content.includes(hook));
+				writeFileSync(script, content.replace(hook, hook + "  let g:reply_to_ai_path_calls = get(g:, 'reply_to_ai_path_calls', 0) + 1\n"));
+			}
 			writeFileSync(driver, [
 				`let g:report_file = ${JSON.stringify(report)}`,
 				...commands,
@@ -86,6 +91,26 @@ test("real Vim tree expands nested directories before opening a selected file", 
 		assert.deepEqual(observed.loaded, ["unused.ts"]);
 		assert.ok(result); assert.match(result.prompt, /@@ Nested comment/);
 		assert.match(result.prompt, /unused.ts/);
+	} });
+});
+
+test("real Vim uses one path lookup per tree-buffer entry and still recognizes lazily created copies", { skip: !installed, timeout: 15000 }, async () => {
+	await runWorkspace({ tree: true, countPaths: true, commands: [
+		"let g:reply_to_ai_path_calls = 0",
+		"doautocmd BufEnter",
+		"let counts = [g:reply_to_ai_path_calls]",
+		"call search('a.ts$', 'W')",
+		'call feedkeys("\\<CR>,aSaved comment\\<Esc>:w\\<CR>", \'xt\')',
+		"ReTree",
+		"let g:reply_to_ai_path_calls = 0",
+		"doautocmd BufEnter",
+		"call add(counts, g:reply_to_ai_path_calls)",
+		"call writefile([json_encode({'counts': counts, 'id': get(b:, 'reply_to_ai_id', -1)})], g:report_file)",
+		"qall!",
+	], check: ({ result, report, observed }) => {
+		assert.deepEqual(JSON.parse(readFileSync(report, "utf8")), { counts: [1, 1], id: -1 });
+		assert.deepEqual(observed.loaded, ["a.ts"]);
+		assert.ok(result); assert.match(result.prompt, /@@ Saved comment/);
 	} });
 });
 

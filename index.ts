@@ -63,14 +63,14 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 					if (!saved) { ctx.ui.notify("Review cancelled; nothing sent.", "info"); return; }
 					cleanup = saved.cleanup;
 					// File review is deliberately presence-only; chat and generated patches retain their existing rules.
-					const comments = newComments(tag === "file" ? "" : original, saved.content);
+					const comments = tag === "file" ? [] : newComments(original, saved.content);
 					if (tag === "file" ? !saved.content.includes("@@") : comments.length === 0) {
 						ctx.ui.notify(tag === "file" ? "No @@ comments; nothing sent." : "No new @@ comments; nothing sent.", "info"); return;
 					}
 					large = Buffer.byteLength(saved.content, "utf8") > INLINE_REVIEW_BYTES;
 					if (large) {
 						const commentsPath = join(dirname(saved.filePath), "comments.json");
-						writeFileSync(commentsPath, JSON.stringify(comments, null, 2) + "\n", { mode: 0o600 });
+						writeFileSync(commentsPath, JSON.stringify(tag === "file" ? newComments("", saved.content) : comments, null, 2) + "\n", { mode: 0o600 });
 						prompt = reviewFilePrompt(saved.filePath, commentsPath, subject, tag, sourceFile);
 					} else prompt = reviewPrompt(saved.content, subject, tag, sourceFile);
 				}

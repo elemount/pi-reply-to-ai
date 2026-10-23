@@ -60,8 +60,9 @@ function commentTexts(line: string): string[] {
 
 /** Ignore existing markers, including Git diff hunks, rather than resending them. */
 export function newComments(original: string, annotated: string): ReviewComment[] {
+	if (!annotated.includes("@@")) return [];
 	const existing = new Map<string, number>();
-	for (const line of original.split(/\r?\n/)) {
+	for (const line of original.includes("@@") ? original.split(/\r?\n/) : []) {
 		for (const text of commentTexts(line)) existing.set(text, (existing.get(text) ?? 0) + 1);
 	}
 	const comments: ReviewComment[] = [];
