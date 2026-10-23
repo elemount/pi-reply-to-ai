@@ -128,7 +128,7 @@ Message indexes count **AI text replies only**, newest first, in the active sess
 
 `/re N-M` selects an **inclusive** interval with `N <= M`. Since index 0 is the latest reply, `/re 0-10` includes **eleven** replies; use `/re 0-9` for the most recent ten. `/re message N-M` is also accepted.
 
-The temporary file orders the selected replies **oldest to newest**, so `/re 0-10` displays indexes 10 down to 0. Each reply has its own `<reply index="N">` section with safely quoted text. Keep the index labels intact and add `@@` comments near the relevant text, then save and quit to submit the whole review once.
+The temporary file orders the selected replies **oldest to newest**, so `/re 0-10` displays indexes 10 down to 0. Each reply has its own `<reply index="N">` section with safely quoted text. Keep the index labels intact and add `#REPLY:` comments near the relevant text, then save and quit to submit the whole review once.
 
 The **16 KiB limit applies to the entire saved collection**, including section markup and comments, not to each reply separately. Large collections remain on disk and are referenced by a short prompt. Unavailable ranges report the available indexes instead of silently returning fewer replies. Invalid or reversed ranges are rejected before opening Vim. Ctrl+Alt+R still reviews only the latest reply.
 
@@ -154,9 +154,9 @@ Git must be installed, but **neither the working directory nor the selected dire
 
 Save the current file with **`:w`**. Use **`:wqa`** to save all modified review buffers and exit Vim. In multi-window/tab mode, `:wq` may only close the current window; Pi resumes only after Vim exits. Enter and `,a` remain comment shortcuts in review files, while Enter navigates in the tree.
 
-Submission is intentionally simple: **only saved copies containing the literal `@@` marker are included**, once per source file. There is no source diff or old/new comment comparison for file references. Even an existing or empty `@@` counts. Unsaved edits, unmarked copies, the tree, and preview buffers are excluded. `:q` / `:qa!` discard unsaved changes, but previously saved marked versions still submit. Remove `@@` and save again to exclude a file.
+Submission is intentionally simple: **only saved copies containing the literal `#REPLY:` marker are included**, once per source file. There is no source diff or old/new comment comparison for file references. Even an existing or empty `#REPLY:` counts. Unsaved edits, unmarked copies, the tree, and preview buffers are excluded. `:q` / `:qa!` discard unsaved changes, but previously saved marked versions still submit. Remove `#REPLY:` and save again to exclude a file.
 
-All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 16 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `@@`.
+All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 16 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `#REPLY:`.
 
 Limits: 64 input references, 2,000 reviewable directory files, and 64 MiB total opened-copy/saved-review data. Narrow the selection if a limit is reached. Git listing has a 30-second timeout.
 
@@ -182,26 +182,28 @@ Existing diff hunk headers are not counted as new comments. Generating or saving
 
 ## Comments
 
-Use **`@@` only** to mark comments, anywhere including inline. The document opens with one blank line at the end for appending comments.
+Use **`#REPLY:` only** to mark comments, anywhere including inline. The document opens with one blank line at the end for appending comments.
+
+Starting with v0.5.0, `@@`, `??`, and bare `REPLY:` are ordinary text, not annotation aliases. Git diff hunk headers (`@@ ... @@`) and language operators such as `??` are preserved. Use the shortcuts below to insert `#REPLY:` automatically.
 
 ```markdown
-An original paragraph. @@ Add an example.
-@@ Explain the edge cases.
-Original text @@ First comment @@ Second comment
+An original paragraph. #REPLY: Add an example.
+#REPLY: Explain the edge cases.
+Original text #REPLY: First comment #REPLY: Second comment
 ```
 
-For chat and generated Git patch reviews, a comment ends at the next `@@` marker or the end of its line; empty comments and unchanged original markers do not count as new comments. **File/directory reviews use marker presence only**, not this comparison. User-authored text can be in any language; plugin messages and prompts are in English.
+For chat and generated Git patch reviews, a comment ends at the next `#REPLY:` marker or the end of its line; empty comments and unchanged original markers do not count as new comments. **File/directory reviews use marker presence only**, not this comparison. User-authored text can be in any language; plugin messages and prompts are in English.
 
 ### Historical versus current chat comments
 
-For chat reviews (`/re`, numeric indexes, ranges, and Ctrl+Alt+R), **every existing `@@` in the selected history is changed to `@ai:` in the review copy before Vim opens**, including inline references, old comments, and code examples. Stored session messages are not modified.
+For chat reviews (`/re`, numeric indexes, ranges, and Ctrl+Alt+R), **every existing `#REPLY:` in the selected history is changed to `@ai:` in the review copy before Vim opens**, including inline references, old comments, and code examples. Stored session messages are not modified.
 
 - `@ai:` means a past comment or historical context, not a new request.
-- `@@` means a current comment you add in this review.
+- `#REPLY:` means a current comment you add in this review.
 
-Both inline and large-file prompts explicitly explain this distinction and tell the AI not to treat comments from earlier chat messages as new requests. The conversion happens only before editing, so newly added `@@` comments stay current. Editing only historical `@ai:` text does not submit a new review.
+Both inline and large-file prompts explicitly explain this distinction and tell the AI not to treat comments from earlier chat messages as new requests. The conversion happens only before editing, so newly added `#REPLY:` comments stay current. Editing only historical `@ai:` text does not submit a new review.
 
-File references and generated Git patches are not rewritten. File reviews include any saved copy containing `@@`; generated Git reviews still exclude their original diff hunk headers from new-comment detection.
+File references and generated Git patches are not rewritten. File reviews include any saved copy containing `#REPLY:`; diff hunk headers are not annotation markers in any review mode.
 
 ### Review-buffer shortcuts
 
@@ -209,8 +211,8 @@ In Normal mode:
 
 | Key | Action |
 | --- | --- |
-| **Enter** | Open a new line below, insert `@@ `, and enter Insert mode |
-| **`,a`** | Append ` @@ ` to the current line and enter Insert mode |
+| **Enter** | Open a new line below, insert `#REPLY: `, and enter Insert mode |
+| **`,a`** | Append ` #REPLY: ` to the current line and enter Insert mode |
 
 These bindings apply only to the temporary review buffer (replies, files, and patches). Other buffers, Insert-mode Enter, and your vimrc are unchanged. Starting a comment does not save or send it; save and quit when ready.
 
@@ -220,7 +222,7 @@ These bindings apply only to the temporary review buffer (replies, files, and pa
 - `:wq`, `:w` then `:q`, and `:w` then `:q!` all send the **last saved version**.
 - Changes made after the last save are not sent unless saved again.
 - Quit without ever saving to cancel. In this review buffer, `:q` discards unsaved edits without a confirmation prompt.
-- Chat/generated Git reviews require new comments. File/directory reviews only require a saved copy containing `@@`.
+- Chat/generated Git reviews require new comments. File/directory reviews only require a saved copy containing `#REPLY:`.
 - For multiple files or a directory, use `:wqa` to save all modified copies and exit.
 - An abnormal editor exit sends nothing and restores Pi's UI.
 
@@ -233,13 +235,13 @@ The inline-message limit is **16 KiB of UTF-8 review bytes**, including trailing
 - **Up to 16 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
 - **Over 16 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
 
-Large multi-file workspaces use `reviews.json` instead: it contains only the included source-file/annotated-copy mappings, not a duplicated comment index. The private `saved` folder contains only included snapshots, so the AI can search it for `@@` and read relevant context.
+Large multi-file workspaces use `reviews.json` instead: it contains only the included source-file/annotated-copy mappings, not a duplicated comment index. The private `saved` folder contains only included snapshots, so the AI can search it for `#REPLY:` and read relevant context.
 
 The outer tag identifies the source: `<reply>` for one AI reply, `<replies>` for a reply range, `<patch>` for generated Git patches, `<file source="...">` for one file, or `<files>` for a file collection. A range prompt quotes the collection of numbered `<reply>` sections and tells the AI to use their indexes and surrounding text to locate comments. Annotated text goes directly inside it, without an extra wrapper:
 
 ```xml
 <reply subject="AI response 1 (0 = latest)"><![CDATA[
-Original reply. @@ Add an example.
+Original reply. #REPLY: Add an example.
 ]]></reply>
 ```
 
@@ -261,7 +263,7 @@ Your Vim configuration is retained. Modelines, swap, persistent undo, and backup
 
 Directory candidates are checked in batches of up to eight, keeping file handles bounded and stopping within one batch of the file-count limit. Results retain Git listing order regardless of probe completion order. Git ignore rules, path containment, symlink filtering, UTF-8 checks, and size limits remain in place.
 
-Vim builds a copy-path index once, so entering the tree or another unrelated buffer does not repeatedly resolve every candidate path. Marker-free reviews skip comment parsing; inline file reviews use only the `@@` presence check. Large single-file reviews still generate their comment index when needed.
+Vim builds a copy-path index once, so entering the tree or another unrelated buffer does not repeatedly resolve every candidate path. Marker-free reviews skip comment parsing; inline file reviews use only the `#REPLY:` presence check. Large single-file reviews still generate their comment index when needed.
 
 ## Tests
 

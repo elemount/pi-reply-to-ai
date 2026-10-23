@@ -50,7 +50,7 @@ async function runWorkspace({ tree, commands, check, countPaths = false }) {
 	} finally { result?.cleanup(); rmSync(root, { recursive: true, force: true }); }
 }
 
-test("real Vim opens explicit files in separate tabs with @@ shortcuts and per-file snapshots", { skip: !installed, timeout: 15000 }, async () => {
+test("real Vim opens explicit files in separate tabs with #REPLY: shortcuts and per-file snapshots", { skip: !installed, timeout: 15000 }, async () => {
 	await runWorkspace({ tree: false, commands: [
 		"call writefile([string(tabpagenr('$'))], g:report_file)",
 		"tabfirst",
@@ -61,7 +61,7 @@ test("real Vim opens explicit files in separate tabs with @@ shortcuts and per-f
 		assert.equal(readFileSync(report, "utf8").trim(), "2");
 		assert.ok(result); assert.equal(result.large, false);
 		assert.match(result.prompt, /<files subject="these files">/);
-		assert.match(result.prompt, /@@ First comment/); assert.match(result.prompt, /@@ Second comment/);
+		assert.match(result.prompt, /#REPLY: First comment/); assert.match(result.prompt, /#REPLY: Second comment/);
 	} });
 });
 
@@ -89,7 +89,7 @@ test("real Vim tree expands nested directories before opening a selected file", 
 		'call feedkeys("\\<CR>,aNested comment\\<Esc>:wqa\\<CR>", \'xt\')',
 	], check: ({ result, observed }) => {
 		assert.deepEqual(observed.loaded, ["unused.ts"]);
-		assert.ok(result); assert.match(result.prompt, /@@ Nested comment/);
+		assert.ok(result); assert.match(result.prompt, /#REPLY: Nested comment/);
 		assert.match(result.prompt, /unused.ts/);
 	} });
 });
@@ -110,7 +110,7 @@ test("real Vim uses one path lookup per tree-buffer entry and still recognizes l
 	], check: ({ result, report, observed }) => {
 		assert.deepEqual(JSON.parse(readFileSync(report, "utf8")), { counts: [1, 1], id: -1 });
 		assert.deepEqual(observed.loaded, ["a.ts"]);
-		assert.ok(result); assert.match(result.prompt, /@@ Saved comment/);
+		assert.ok(result); assert.match(result.prompt, /#REPLY: Saved comment/);
 	} });
 });
 
@@ -121,7 +121,7 @@ test("real Vim submits only saved markers and drops later unsaved edits across f
 		"tabnext",
 		'call feedkeys(",aNever saved\\<Esc>:q\\<CR>", \'xt\')',
 	], check: ({ result }) => {
-		assert.ok(result); assert.match(result.prompt, /@@ Saved comment/);
+		assert.ok(result); assert.match(result.prompt, /#REPLY: Saved comment/);
 		assert.doesNotMatch(result.prompt, /Unsaved tail|Never saved/);
 	} });
 });

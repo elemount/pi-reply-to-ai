@@ -40,7 +40,8 @@ test("root commit is compared with the empty tree and existing hunk markers are 
 		assert.match(patch, /diff --git a\/root.txt b\/root.txt/);
 		assert.match(patch, /\+root contents/);
 		assert.deepEqual(newComments(patch, reviewDocument(patch)), []);
-		assert.deepEqual(newComments(patch, patch + "\n@@ Add a test\n"), [
+		assert.deepEqual(newComments("", patch), []);
+		assert.deepEqual(newComments(patch, patch + "\n#REPLY: Add a test\n"), [
 			{ line: patch.split("\n").length + 1, text: "Add a test" },
 		]);
 	});
@@ -198,14 +199,14 @@ test("snapshot headers record reproducible commands, including merge-base lookup
 });
 
 test("inline and file-based patch prompts require editing real files rather than the snapshot", () => {
-	const prompts = [reviewPrompt("patch @@ fix", "this Git patch", "patch"),
+	const prompts = [reviewPrompt("patch #REPLY: fix", "this Git patch", "patch"),
 		reviewFilePrompt("/tmp/review.diff", "/tmp/comments.json", "this Git patch", "patch")];
 	for (const prompt of prompts) {
 		assert.match(prompt, /read its header for the repository and generation command/);
 		assert.match(prompt, /inspect and edit the real repository files/);
 		assert.match(prompt, /Do not edit or apply the review snapshot/);
 	}
-	assert.doesNotMatch(reviewPrompt("reply @@ fix"), /real repository files/);
+	assert.doesNotMatch(reviewPrompt("reply #REPLY: fix"), /real repository files/);
 });
 
 test("review padding and prompts preserve significant trailing whitespace in patch lines", () => {
@@ -215,8 +216,8 @@ test("review padding and prompts preserve significant trailing whitespace in pat
 });
 
 test("patch prompts identify Git patches in XML and use diff highlighting", () => {
-	const inline = reviewPrompt("patch @@ comment", "this Git patch", "patch");
-	assert.match(inline, /<patch subject="this Git patch"><!\[CDATA\[\npatch @@ comment\n\]\]><\/patch>/);
+	const inline = reviewPrompt("patch #REPLY: comment", "this Git patch", "patch");
+	assert.match(inline, /<patch subject="this Git patch"><!\[CDATA\[\npatch #REPLY: comment\n\]\]><\/patch>/);
 	assert.doesNotMatch(inline, /<review|<document/);
 	const filePrompt = reviewFilePrompt("/tmp/review.diff", "/tmp/comments.json", "this Git patch", "patch");
 	assert.match(filePrompt, /<patch subject="this Git patch">/);

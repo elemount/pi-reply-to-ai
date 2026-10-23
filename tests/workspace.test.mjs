@@ -48,8 +48,8 @@ test("non-repository directories honor .gitignore, skip binary/sensitive files, 
 			assert.equal(readFileSync(join(root, "a.ts"), "utf8"), "const a = 1;\n");
 			assert.equal(workspace.files.filter(file => existsSync(file.copy)).length, 1);
 			assert.ok(workspace.files.every(file => existsSync(dirname(file.copy)) === (file.id === a.id)));
-			writeFileSync(a.copy, "@@ keep my edits\n"); await workspace.load(a.id);
-			assert.equal(readFileSync(a.copy, "utf8"), "@@ keep my edits\n");
+			writeFileSync(a.copy, "#REPLY: keep my edits\n"); await workspace.load(a.id);
+			assert.equal(readFileSync(a.copy, "utf8"), "#REPLY: keep my edits\n");
 			await assert.rejects(workspace.load(9999), /Invalid review file selection/);
 		} finally { workspace.cleanup(); }
 	});
@@ -152,12 +152,12 @@ test("explicit files deduplicate sources and use independent copies and snapshot
 		try {
 			assert.equal(workspace.tree, false); assert.equal(workspace.files.length, 2);
 			assert.ok(workspace.files.every(file => existsSync(file.copy)));
-			writeFileSync(workspace.files[0].saved, "@@ saved comment\n");
-			writeFileSync(workspace.files[0].copy, "@@ later unsaved edit\n");
+			writeFileSync(workspace.files[0].saved, "#REPLY: saved comment\n");
+			writeFileSync(workspace.files[0].copy, "#REPLY: later unsaved edit\n");
 			writeFileSync(workspace.files[1].saved, "no comments\n");
-			writeFileSync(join(workspace.directory, "saved", "unregistered.txt"), "@@ ignored\n");
+			writeFileSync(join(workspace.directory, "saved", "unregistered.txt"), "#REPLY: ignored\n");
 			const reviews = workspace.collect();
-			assert.equal(reviews.length, 1); assert.equal(reviews[0].content, "@@ saved comment\n");
+			assert.equal(reviews.length, 1); assert.equal(reviews[0].content, "#REPLY: saved comment\n");
 			assert.equal(existsSync(workspace.files[1].saved), false);
 			assert.equal(existsSync(join(workspace.directory, "saved", "unregistered.txt")), false);
 			assert.equal(existsSync(join(workspace.directory, "copies")), false);
@@ -168,13 +168,32 @@ test("explicit files deduplicate sources and use independent copies and snapshot
 
 test("file submission is marker-presence only, including existing or empty markers; unsaved files are excluded", async () => {
 	await sources(async root => {
-		writeFileSync(join(root, "a.txt"), "@@ existing\n"); writeFileSync(join(root, "b.txt"), "b\n");
+		writeFileSync(join(root, "a.txt"), "#REPLY: existing\n"); writeFileSync(join(root, "b.txt"), "b\n");
 		const workspace = await createFileWorkspace(["a.txt", "b.txt"], root);
 		try {
-			writeFileSync(workspace.files[0].saved, "@@\n");
-			writeFileSync(workspace.files[1].copy, "@@ not saved\n");
+			writeFileSync(workspace.files[0].saved, "#REPLY:\n");
+			writeFileSync(workspace.files[1].copy, "#REPLY: not saved\n");
 			assert.equal(workspace.collect().length, 1);
 		} finally { workspace.cleanup(); }
+	});
+});
+
+test("only #REPLY: includes saved files; diff hunks, nullish operators, and bare prefixes do not", async () => {
+	await sources(async root => {
+		const contents = ["@@ -1 +1 @@\n-old\n+new\n", "const value = input ?? fallback;\n", "REPLY: ordinary text\nREVIEW: ordinary text\n", "#REPLY:\n"];
+		const names = contents.map((content, index) => {
+			const name = `${index}.txt`; writeFileSync(join(root, name), content); return name;
+		});
+		for (const paths of [names, [root]]) {
+			const workspace = await createFileWorkspace(paths, root);
+			try {
+				for (const item of workspace.files) { await workspace.load(item.id); writeFileSync(item.saved, readFileSync(item.copy)); }
+				const reviews = workspace.collect();
+				assert.equal(reviews.length, 1); assert.ok(reviews[0].source.endsWith("3.txt"));
+				assert.equal(reviews[0].content, "#REPLY:\n\n");
+				assert.ok(workspace.files.filter(item => !item.source.endsWith("3.txt")).every(item => !existsSync(item.saved)));
+			} finally { workspace.cleanup(); }
+		}
 	});
 });
 

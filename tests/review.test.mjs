@@ -85,22 +85,22 @@ test("AI reply indexes count only text replies, newest first, ignoring user/tool
 	assert.deepEqual(messages, original);
 });
 
-test("@@ comments work anywhere, with Unicode, CRLF, duplicates, and original diff hunks", () => {
+test("#REPLY: comments work anywhere, with Unicode, CRLF, duplicates, and original diff hunks", () => {
 	const unicode = "\u4e2d\u6587";
-	const original = "Original\n@@ -1,2 +1,3 @@\n@@ already here";
-	const annotated = `Original\r\n@@ -1,2 +1,3 @@\r\n@@ already here\r\n  @@ ${unicode}  \r\n@@ ${unicode}\r\n@@\r\ninline@@comment\r\n@@ already here`;
+	const original = "Original\n@@ -1,2 +1,3 @@\n#REPLY: already here";
+	const annotated = `Original\r\n@@ -1,2 +1,3 @@\r\n#REPLY: already here\r\n  #REPLY: ${unicode}  \r\n#REPLY: ${unicode}\r\n#REPLY:\r\ninline#REPLY:comment\r\n#REPLY: already here`;
 	assert.deepEqual(newComments(original, annotated), [
 		{ line: 4, text: unicode }, { line: 5, text: unicode },
 		{ line: 7, text: "comment" }, { line: 8, text: "already here" },
 	]);
 	assert.deepEqual(newComments(original, original + "\n"), []);
-	assert.deepEqual(newComments("Original @@ existing", "Original @@ existing @@ First @@ Second"), [
+	assert.deepEqual(newComments("Original #REPLY: existing", "Original #REPLY: existing #REPLY: First #REPLY: Second"), [
 		{ line: 1, text: "First" }, { line: 1, text: "Second" },
 	]);
 });
 
 test("marker-free reviews return before splitting either document into lines", t => {
-	const original = "@@ old comment\n".repeat(10000), annotated = "no marker\n".repeat(10000);
+	const original = "#REPLY: old comment\n".repeat(10000), annotated = "no marker\n".repeat(10000);
 	const split = String.prototype.split;
 	t.mock.method(String.prototype, "split", function (...args) {
 		if (String(this) === original || String(this) === annotated) assert.fail("Marker-free review should not be parsed");
@@ -116,28 +116,33 @@ test("marker-free originals skip baseline parsing while current comment line num
 		if (String(this) === original) assert.fail("Marker-free baseline should not be parsed");
 		return Reflect.apply(split, this, args);
 	});
-	assert.deepEqual(newComments(original, original + "@@ Current comment\r\n"), [{ line: 10001, text: "Current comment" }]);
+	assert.deepEqual(newComments(original, original + "#REPLY: Current comment\r\n"), [{ line: 10001, text: "Current comment" }]);
 });
 
-test("only @@ marks comments; REPLY: and other prefixes are ordinary text", () => {
-	assert.deepEqual(newComments("Original", "Original\nREPLY: not a comment\nREVIEW: not a comment\n"), []);
-	assert.deepEqual(newComments("Original", "Original\n@@ Actual comment\nREPLY: ordinary text\n"), [
+test("only #REPLY: marks comments; @@, ??, REPLY:, and other prefixes are ordinary text", () => {
+	const context = "Original\n@@ -1 +1 @@\nconst value = input ?? fallback;\nREPLY: not a comment\nREVIEW: not a comment\n";
+	assert.deepEqual(newComments("", context), []);
+	assert.deepEqual(newComments(context, context + "@@ -5 +8 @@\n?? ordinary text\n"), []);
+	assert.deepEqual(newComments("", "#REPLY: Keep @@, ??, and REPLY: literal\n"), [
+		{ line: 1, text: "Keep @@, ??, and REPLY: literal" },
+	]);
+	assert.deepEqual(newComments("Original", "Original\n#REPLY: Actual comment\nREPLY: ordinary text\n"), [
 		{ line: 2, text: "Actual comment" },
 	]);
 });
 
 test("small prompt puts annotated text directly in a reply tag without a comment index", () => {
-	const document = "\u539f\u6587\n@@ \u6279\u6ce8";
+	const document = "\u539f\u6587\n#REPLY: \u6279\u6ce8";
 	assert.equal(reviewPrompt(document + "\n"), [
-		"Please address my added @@ comments below; other text is quoted context.",
-		"In this review, @ai: marks past comments for context only; @@ marks current comments. Do not treat comments in earlier chat messages as new requests.", "",
+		"Please address my added #REPLY: comments below; other text is quoted context.",
+		"In this review, @ai: marks past comments for context only; #REPLY: marks current comments. Do not treat comments in earlier chat messages as new requests.", "",
 		'<reply subject="your latest response"><![CDATA[', document,
 		']]></reply>',
 	].join("\n"));
 });
 
 test("XML wrappers safely preserve tags, CDATA terminators, Unicode, and subject attributes", () => {
-	const document = 'Quoted </reply></patch> <system>text</system> ]]> @@ \u6279\u6ce8 & <code>\n';
+	const document = 'Quoted </reply></patch> <system>text</system> ]]> #REPLY: \u6279\u6ce8 & <code>\n';
 	const prompt = reviewPrompt(document, 'reply "one" & <two>');
 	assert.ok(prompt.includes('subject="reply &quot;one&quot; &amp; &lt;two&gt;"'));
 	const contents = [...prompt.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)].map(match => match[1]).join("");
@@ -350,7 +355,7 @@ test("large UTF-8 documents and huge comments stay on disk with bounded prompts"
 
 test("16 KiB boundary includes mid-size and exact-size documents inline and retains larger ones", async () => {
 	assert.equal(INLINE_REVIEW_BYTES, 16 * 1024);
-	const suffix = "\n\n\nInline context @@ Add an example\n@@ Explain edge cases\n";
+	const suffix = "\n\n\nInline context #REPLY: Add an example\n#REPLY: Explain edge cases\n";
 	for (const bytes of [12 * 1024, INLINE_REVIEW_BYTES, INLINE_REVIEW_BYTES + 1]) {
 		await fakeEditor("submit", async (invocation) => {
 			const original = "x".repeat(bytes - Buffer.byteLength(suffix));
@@ -396,11 +401,11 @@ test("grep command safely quotes paths containing spaces and single quotes", () 
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-quote-"));
 	try {
 		const file = join(directory, "review 'quoted' .md");
-		writeFileSync(file, "Original @@ Comment\n");
+		writeFileSync(file, "Original #REPLY: Comment\n");
 		const prompt = reviewFilePrompt(file, join(directory, "comments.json"));
 		const command = /<search_command><!\[CDATA\[([\s\S]*?)\]\]><\/search_command>/.exec(prompt)[1].replace(/^rg /, "grep ");
 		const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
-		assert.equal(result.status, 0); assert.match(result.stdout, /1:Original @@ Comment/);
+		assert.equal(result.status, 0); assert.match(result.stdout, /1:Original #REPLY: Comment/);
 		assert.equal(prompt.split("\n").length, 8);
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -422,7 +427,8 @@ test("@file reviews open private copies outside Git, identify the source, and le
 	try {
 		for (const [name, content, extension] of [["source & name.ts", "export const answer = 42;\n", "ts"],
 			["empty.txt", "", "txt"], ["no-extension", "Text\n", "txt"],
-			["markers.md", "Original @@ marker\n@ai: literal text\n", "md"]]) {
+			["markers.md", "Original #REPLY: marker\n@ai: literal text\n", "md"],
+			["patch.diff", "diff --git a/file b/file\n@@ -1 +1 @@\n-old\n+new\n", "diff"]]) {
 			const source = join(directory, name); writeFileSync(source, content); chmodSync(source, 0o444);
 			await fakeEditor("submit", async (invocation) => {
 				const h = harness([]); h.ctx.cwd = directory; await h.command(`@"${name}"`);
@@ -450,12 +456,14 @@ test("inline and unmarked file reviews skip comment parsing, including saved emp
 		return Reflect.apply(split, this, args);
 	});
 	try {
-		for (const [content, sends] of [["file_parsing_guard\n", 0], ["file_parsing_guard @@ existing\n", 1], ["file_parsing_guard\n@@\n", 1]]) {
+		for (const [content, sends] of [["file_parsing_guard\n", 0], ["file_parsing_guard\n@@ -1 +1 @@\n", 0],
+			["file_parsing_guard ?? fallback\n", 0], ["file_parsing_guard REPLY: ordinary text\n", 0],
+			["file_parsing_guard #REPLY: existing\n", 1], ["file_parsing_guard\n#REPLY:\n", 1]]) {
 			writeFileSync(join(directory, "source.txt"), content);
 			await fakeEditor("unchanged", async () => {
 				const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
 				assert.equal(h.sent.length, sends);
-				if (!sends) assert.match(h.notices[0][0], /No @@ comments/);
+				if (!sends) assert.match(h.notices[0][0], /No #REPLY: comments/);
 				assert.equal(readFileSync(join(directory, "source.txt"), "utf8"), content);
 			});
 		}
@@ -477,17 +485,17 @@ test("large @file reviews preserve private copies and source references, not ful
 				assert.ok(prompt.includes(saved)); assert.doesNotMatch(prompt, /source line/);
 				const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
 				assert.deepEqual(comments.map(comment => comment.text), ["Add an example", "Explain edge cases"]);
-				assert.match(readFileSync(saved, "utf8"), /@@ Add an example/);
+				assert.match(readFileSync(saved, "utf8"), /#REPLY: Add an example/);
 				assert.equal(readFileSync(source, "utf8"), content);
 			} finally { rmSync(dirname(saved), { recursive: true, force: true }); }
 		});
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("file cancellation and editor failure do not send; any saved @@ marker counts without diffing", async () => {
+test("file cancellation and editor failure do not send; any saved #REPLY: marker counts without diffing", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
 	try {
-		const source = join(directory, "source.txt"); const content = "Text @@ already present\n"; writeFileSync(source, content);
+		const source = join(directory, "source.txt"); const content = "Text #REPLY: already present\n"; writeFileSync(source, content);
 		for (const mode of ["cancel", "crash"]) {
 			await fakeEditor(mode, async (invocation) => {
 				const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
@@ -499,7 +507,7 @@ test("file cancellation and editor failure do not send; any saved @@ marker coun
 		await fakeEditor("unchanged", async () => {
 			const h = harness([]); h.ctx.cwd = directory; await h.command("@source.txt");
 			assert.equal(h.sent.length, 1);
-			assert.match(h.sent[0][0], /Text @@ already present/);
+			assert.match(h.sent[0][0], /Text #REPLY: already present/);
 			assert.equal(readFileSync(source, "utf8"), content);
 		});
 		await fakeEditor("submit", async () => {
@@ -522,7 +530,7 @@ test("multiple files use tabs and ordinary directories use a lazy tree, submitti
 				assert.equal(invocation().args.includes("-p2"), !tree);
 				assert.match(h.sent[0][0], /<files subject="these files">/);
 				assert.match(h.sent[0][0], /a.ts/); assert.match(h.sent[0][0], /b.ts/);
-				assert.match(h.sent[0][0], /@@ File comment/);
+				assert.match(h.sent[0][0], /#REPLY: File comment/);
 				assert.doesNotMatch(h.sent[0][0], /@ai: marks past comments/);
 				assert.equal(existsSync(invocation().workspace), false);
 				assert.deepEqual(h.lifecycle, ["stop", "start", ["render", true]]);
@@ -537,10 +545,10 @@ test("multiple files use tabs and ordinary directories use a lazy tree, submitti
 test("file workspaces submit saved marker presence only and clean up cancelled/crashed reviews", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-command-files-"));
 	try {
-		writeFileSync(join(directory, "a.txt"), "@@ present\n"); writeFileSync(join(directory, "b.txt"), "no marker\n");
+		writeFileSync(join(directory, "a.txt"), "#REPLY: present\n"); writeFileSync(join(directory, "b.txt"), "no marker\n");
 		await fakeEditor("unchanged", async invocation => {
 			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
-			assert.equal(h.sent.length, 1); assert.match(h.sent[0][0], /@@ present/);
+			assert.equal(h.sent.length, 1); assert.match(h.sent[0][0], /#REPLY: present/);
 			assert.doesNotMatch(h.sent[0][0], /no marker/);
 			assert.equal(existsSync(invocation().workspace), false);
 		});
@@ -550,10 +558,10 @@ test("file workspaces submit saved marker presence only and clean up cancelled/c
 				assert.equal(h.sent.length, 0); assert.equal(existsSync(invocation().workspace), false);
 			});
 		}
-		writeFileSync(join(directory, "a.txt"), "no marker\n");
+		writeFileSync(join(directory, "a.txt"), "@@ -1 +1 @@\nconst value = input ?? fallback;\nREPLY: ordinary text\n");
 		await fakeEditor("unchanged", async () => {
 			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
-			assert.equal(h.sent.length, 0); assert.match(h.notices[0][0], /No saved files contain @@/);
+			assert.equal(h.sent.length, 0); assert.match(h.notices[0][0], /No saved files contain #REPLY:/);
 		});
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -568,7 +576,7 @@ test("files and directory collections between 8 and 16 KiB are sent inline", asy
 				const h = harness([]); h.ctx.cwd = directory; await h.command(args);
 				assert.equal(h.sent.length, 1); const prompt = h.sent[0][0];
 				assert.ok(Buffer.byteLength(prompt) > 8 * 1024 && Buffer.byteLength(prompt) < INLINE_REVIEW_BYTES);
-				assert.match(prompt, /@@ (?:File comment|Add an example)/);
+				assert.match(prompt, /#REPLY: (?:File comment|Add an example)/);
 				assert.doesNotMatch(prompt, /<annotated_file>|<review_manifest>|<comments_file>/);
 				const launched = invocation();
 				assert.equal(existsSync(launched.workspace ?? dirname(launched.saved)), false);
@@ -589,7 +597,7 @@ test("large file workspaces reference a per-file source manifest instead of embe
 				assert.match(prompt, /<review_manifest>/); assert.doesNotMatch(prompt, /x{100}|y{100}/);
 				const entries = JSON.parse(readFileSync(join(workspace, "reviews.json"), "utf8"));
 				assert.equal(entries.length, 2);
-				for (const entry of entries) { assert.ok(entry.source); assert.match(readFileSync(entry.annotatedFile, "utf8"), /@@ File comment/); }
+				for (const entry of entries) { assert.ok(entry.source); assert.match(readFileSync(entry.annotatedFile, "utf8"), /#REPLY: File comment/); }
 				assert.equal(existsSync(join(workspace, "copies")), false);
 				assert.equal(existsSync(join(workspace, "manifest.json")), false);
 			} finally { rmSync(workspace, { recursive: true, force: true }); }
@@ -598,42 +606,43 @@ test("large file workspaces reference a per-file source manifest instead of embe
 });
 
 test("single replies and the shortcut demote past markers before editing without changing stored history", async () => {
-	const text = "Original @@ Add an example\n```\n@@ inline@@example\n```\n@ai: existing history";
+	const text = "Original #REPLY: Add an example\n```\n#REPLY: inline#REPLY:example\n@@ -1 +1 @@\nconst value = input ?? fallback;\n```\n@ai: existing history";
 	const messages = [assistant(text)]; const original = structuredClone(messages);
 	for (const action of [h => h.command(), h => h.command("0"), h => h.shortcut()]) {
 		await fakeEditor("submit", async (invocation) => {
 			const h = harness(messages); await action(h);
-			assert.equal(invocation().initialContent, reviewDocument(text.replaceAll("@@", "@ai:")));
-			assert.doesNotMatch(invocation().initialContent, /@@/);
+			assert.equal(invocation().initialContent, reviewDocument(text.replaceAll("#REPLY:", "@ai:")));
+			assert.doesNotMatch(invocation().initialContent, /#REPLY:/);
+			assert.ok(invocation().initialContent.includes("@@ -1 +1 @@\nconst value = input ?? fallback;"));
 			assert.equal(h.sent.length, 1);
 			assert.match(h.sent[0][0], /@ai: marks past comments for context only/);
 			assert.match(h.sent[0][0], /Original @ai: Add an example/);
-			assert.match(h.sent[0][0], /@@ Add an example/);
+			assert.match(h.sent[0][0], /#REPLY: Add an example/);
 			assert.deepEqual(messages, original);
 		});
 	}
 });
 
 test("ranges demote every past marker while keeping current comments and reply indexes", async () => {
-	const messages = [assistant("older @@ old comment"), assistant("latest @@ old comment @@ another")];
+	const messages = [assistant("older #REPLY: old comment"), assistant("latest #REPLY: old comment #REPLY: another")];
 	const original = structuredClone(messages);
 	await fakeEditor("submit", async (invocation) => {
 		const h = harness(messages); await h.command("0-1");
 		const initial = invocation().initialContent;
-		assert.doesNotMatch(initial, /@@/);
+		assert.doesNotMatch(initial, /#REPLY:/);
 		assert.match(initial, /older @ai: old comment/);
 		assert.match(initial, /latest @ai: old comment @ai: another/);
 		assert.ok(initial.indexOf('<reply index="1">') < initial.indexOf('<reply index="0">'));
 		assert.equal(h.sent.length, 1);
-		assert.match(h.sent[0][0], /@@ Add an example/);
-		assert.match(h.sent[0][0], /@@ marks current comments/);
+		assert.match(h.sent[0][0], /#REPLY: Add an example/);
+		assert.match(h.sent[0][0], /#REPLY: marks current comments/);
 		assert.deepEqual(messages, original);
 	});
 });
 
 test("large chat collections keep historical markers out of the current comment index", async () => {
 	await fakeEditor("submit", async (invocation) => {
-		const h = harness([assistant("older @@ old comment\n" + "x".repeat(INLINE_REVIEW_BYTES)), assistant("latest @@ another past comment")]);
+		const h = harness([assistant("older #REPLY: old comment\n" + "x".repeat(INLINE_REVIEW_BYTES)), assistant("latest #REPLY: another past comment")]);
 		await h.command("0-1");
 		const { saved } = invocation();
 		try {
@@ -642,7 +651,7 @@ test("large chat collections keep historical markers out of the current comment 
 			const content = readFileSync(saved, "utf8");
 			assert.match(content, /older @ai: old comment/);
 			assert.match(content, /latest @ai: another past comment/);
-			assert.equal((content.match(/@@/g) ?? []).length, 2);
+			assert.equal((content.match(/#REPLY:/g) ?? []).length, 2);
 			const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
 			assert.deepEqual(comments.map(comment => comment.text), ["Add an example", "Explain edge cases"]);
 		} finally { rmSync(dirname(saved), { recursive: true, force: true }); }
@@ -652,11 +661,11 @@ test("large chat collections keep historical markers out of the current comment 
 test("unchanged history with past markers never sends a new review", async () => {
 	for (const args of ["0", "0-1"]) {
 		await fakeEditor("unchanged", async (invocation) => {
-			const h = harness([assistant("older @@ old"), assistant("latest @@ old")]);
+			const h = harness([assistant("older #REPLY: old"), assistant("latest #REPLY: old")]);
 			await h.command(args);
-			assert.doesNotMatch(invocation().initialContent, /@@/);
+			assert.doesNotMatch(invocation().initialContent, /#REPLY:/);
 			assert.equal(h.sent.length, 0);
-			assert.match(h.notices[0][0], /No new @@ comments/);
+			assert.match(h.notices[0][0], /No new #REPLY: comments/);
 		});
 	}
 });
@@ -722,7 +731,7 @@ test("collection size, not individual reply size, controls the 16 KiB file-refer
 test("range cancellation and unchanged existing markers do not send", async () => {
 	for (const mode of ["cancel", "unchanged"]) {
 		await fakeEditor(mode, async (invocation) => {
-			const h = harness([assistant('older @@ existing ]]> <reply>'), assistant('latest @@ existing')]);
+			const h = harness([assistant('older #REPLY: existing ]]> <reply>'), assistant('latest #REPLY: existing')]);
 			await h.command("0-1");
 			assert.equal(h.sent.length, 0);
 			assert.equal(existsSync(dirname(invocation().saved)), false);
@@ -817,9 +826,9 @@ test("unchanged patch hunk headers do not trigger a response", async () => {
 			const h = harness(); h.ctx.cwd = cwd;
 			await h.command("commit");
 			assert.match(invocation().initialContent, /@@ -/);
-			assert.doesNotMatch(invocation().initialContent, /@ai:/);
+			assert.doesNotMatch(invocation().initialContent, /@ai:|#REPLY:/);
 			assert.equal(h.sent.length, 0);
-			assert.match(h.notices[0][0], /No new @@ comments/);
+			assert.match(h.notices[0][0], /No new #REPLY: comments/);
 		});
 	});
 });
@@ -838,7 +847,10 @@ test("large Git patches retain .diff files and get short source-aware prompts", 
 				assert.ok(h.sent[0][0].includes(saved));
 				assert.match(saved, /review\.diff$/);
 				assert.ok(statSync(saved).size > INLINE_REVIEW_BYTES);
-				assert.ok(existsSync(join(dirname(saved), "comments.json")));
+				assert.match(readFileSync(saved, "utf8"), /@@ -/);
+				assert.match(h.sent[0][0], /-F -- '#REPLY:'/);
+				const comments = JSON.parse(readFileSync(join(dirname(saved), "comments.json"), "utf8"));
+				assert.deepEqual(comments.map(comment => comment.text), ["Add an example", "Explain edge cases"]);
 			} finally { rmSync(dirname(saved), { recursive: true, force: true }); }
 		});
 	});
@@ -872,8 +884,8 @@ for (const editor of ["vim"]) {
 		["execute write then q", ":execute 'write'\\<CR>:q\\<CR>", true],
 		["execute wq", ":execute 'wq'\\<CR>", true],
 		["write another file", ":execute 'write ' . fnameescape(g:other_file)\\<CR>:q\\<CR>", true],
-		["save then add unsaved comment", ":w\\<CR>:call append(line('$'), '@@ unsaved')\\<CR>:q\\<CR>", true],
-		["save twice", ":w\\<CR>:call append(line('$'), '@@ second save')\\<CR>:w\\<CR>:q\\<CR>", true],
+		["save then add unsaved comment", ":w\\<CR>:call append(line('$'), '#REPLY: unsaved')\\<CR>:q\\<CR>", true],
+		["save twice", ":w\\<CR>:call append(line('$'), '#REPLY: second save')\\<CR>:w\\<CR>:q\\<CR>", true],
 		["x", ":x\\<CR>", true], ["ZZ", "ZZ", true], ["ZQ", "ZQ", false],
 	]) {
 		test(`${editor}: ${label}`, { skip: !installed }, () => {
@@ -886,7 +898,7 @@ for (const editor of ["vim"]) {
 				writeFileSync(join(directory, "review.vim"), reviewVimScript(saved));
 				writeFileSync(join(directory, "driver.vim"), [
 					`let g:other_file = ${JSON.stringify(join(directory, "other.md"))}`,
-					"call append(line('$'), '@@ Add an example')",
+					"call append(line('$'), '#REPLY: Add an example')",
 					`call feedkeys("${keys}", 'xt')`,
 					"cquit 70", // Fail if the tested key sequence did not exit the editor.
 				].join("\n"));
@@ -898,9 +910,9 @@ for (const editor of ["vim"]) {
 				assert.equal(existsSync(saved), shouldSubmit);
 				if (shouldSubmit) {
 					const content = readFileSync(saved, "utf8");
-					assert.match(content, /@@ Add an example/);
-					assert.doesNotMatch(content, /@@ unsaved/);
-					if (label === "save twice") assert.match(content, /@@ second save/);
+					assert.match(content, /#REPLY: Add an example/);
+					assert.doesNotMatch(content, /#REPLY: unsaved/);
+					if (label === "save twice") assert.match(content, /#REPLY: second save/);
 				}
 			} finally { rmSync(directory, { recursive: true, force: true }); }
 		});

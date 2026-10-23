@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { INLINE_REVIEW_BYTES, assistantText, assistantTextRange, chatHistoryForReview, newComments, replyRangeDocument, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
+import { INLINE_REVIEW_BYTES, REVIEW_MARKER, assistantText, assistantTextRange, chatHistoryForReview, newComments, replyRangeDocument, reviewFilePrompt, reviewPrompt, type ReviewTag } from "./core.ts";
 import { editReview } from "./editor.ts";
 import { fileReview } from "./file.ts";
 import { isReviewDirectory, prepareFileWorkspaceReview } from "./file-workspace.ts";
@@ -37,7 +37,7 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 				if (target.kind === "files" || (target.kind === "file" && await isReviewDirectory(ctx.cwd, target.path))) {
 					const paths = target.kind === "files" ? target.paths : [target.path];
 					const prepared = await prepareFileWorkspaceReview(paths, ctx);
-					if (!prepared) { ctx.ui.notify("No saved files contain @@; nothing sent.", "info"); return; }
+					if (!prepared) { ctx.ui.notify(`No saved files contain ${REVIEW_MARKER}; nothing sent.`, "info"); return; }
 					cleanup = prepared.cleanup; prompt = prepared.prompt; large = prepared.large;
 				} else {
 					let original: string | undefined, sourceFile: string | undefined;
@@ -64,8 +64,8 @@ export default function replyToAiExtension(pi: ExtensionAPI): void {
 					cleanup = saved.cleanup;
 					// File review is deliberately presence-only; chat and generated patches retain their existing rules.
 					const comments = tag === "file" ? [] : newComments(original, saved.content);
-					if (tag === "file" ? !saved.content.includes("@@") : comments.length === 0) {
-						ctx.ui.notify(tag === "file" ? "No @@ comments; nothing sent." : "No new @@ comments; nothing sent.", "info"); return;
+					if (tag === "file" ? !saved.content.includes(REVIEW_MARKER) : comments.length === 0) {
+						ctx.ui.notify(tag === "file" ? `No ${REVIEW_MARKER} comments; nothing sent.` : `No new ${REVIEW_MARKER} comments; nothing sent.`, "info"); return;
 					}
 					large = Buffer.byteLength(saved.content, "utf8") > INLINE_REVIEW_BYTES;
 					if (large) {

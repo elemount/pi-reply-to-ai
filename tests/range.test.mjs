@@ -52,7 +52,7 @@ test("unavailable ranges report the actual available interval without partial re
 });
 
 test("collection sections preserve indexes, XML/code/CDATA text and one trailing blank line", () => {
-	const text = 'Code </reply> & <tag> ]]> @@ existing \u4e2d\u6587';
+	const text = 'Code </reply> & <tag> ]]> #REPLY: existing \u4e2d\u6587';
 	const collection = replyRangeDocument([{ index: 1, text }, { index: 0, text: "latest" }]);
 	assert.ok(collection.startsWith('<reply index="1"><![CDATA[\n'));
 	assert.ok(collection.endsWith('\nlatest\n]]></reply>'));
@@ -60,7 +60,7 @@ test("collection sections preserve indexes, XML/code/CDATA text and one trailing
 	const content = [...collection.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)].map(match => match[1]).join("");
 	assert.equal(content, "\n" + text + "\n\nlatest\n");
 	assert.deepEqual(newComments(collection, reviewDocument(collection)), []);
-	assert.equal(newComments(collection, collection + "\n@@ New comment\n").length, 1);
+	assert.equal(newComments(collection, collection + "\n#REPLY: New comment\n").length, 1);
 	assert.ok(reviewDocument(collection).endsWith("</reply>\n\n"));
 });
 

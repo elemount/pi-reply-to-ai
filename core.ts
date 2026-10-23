@@ -53,16 +53,18 @@ export interface ReviewComment {
 	text: string;
 }
 
+export const REVIEW_MARKER = "#REPLY:";
+
 function commentTexts(line: string): string[] {
-	// Every @@ starts a comment, including inline and repeated markers on one line.
-	return line.split("@@").slice(1).map((text) => text.trim()).filter(Boolean);
+	// Every marker starts a comment, including inline and repeated markers on one line.
+	return line.split(REVIEW_MARKER).slice(1).map((text) => text.trim()).filter(Boolean);
 }
 
-/** Ignore existing markers, including Git diff hunks, rather than resending them. */
+/** Ignore unchanged original comments; Git diff hunk headers are not comment markers. */
 export function newComments(original: string, annotated: string): ReviewComment[] {
-	if (!annotated.includes("@@")) return [];
+	if (!annotated.includes(REVIEW_MARKER)) return [];
 	const existing = new Map<string, number>();
-	for (const line of original.includes("@@") ? original.split(/\r?\n/) : []) {
+	for (const line of original.includes(REVIEW_MARKER) ? original.split(/\r?\n/) : []) {
 		for (const text of commentTexts(line)) existing.set(text, (existing.get(text) ?? 0) + 1);
 	}
 	const comments: ReviewComment[] = [];
@@ -78,7 +80,7 @@ export function newComments(original: string, annotated: string): ReviewComment[
 
 /** Demote every existing marker in a chat review copy, never the stored conversation. */
 export function chatHistoryForReview(text: string): string {
-	return text.replaceAll("@@", "@ai:");
+	return text.replaceAll(REVIEW_MARKER, "@ai:");
 }
 
 /** Leave one blank line for appending comments in Vim. */
@@ -104,9 +106,9 @@ export function replyRangeDocument(replies: readonly IndexedReply[]): string {
 
 export type ReviewTag = "reply" | "replies" | "patch" | "file" | "files";
 
-const FILES_REVIEW_INSTRUCTIONS = "Each file review identifies its original source. Inspect and edit those real files as requested, not the temporary annotated copies. Only saved files containing @@ are included.";
+const FILES_REVIEW_INSTRUCTIONS = `Each file review identifies its original source. Inspect and edit those real files as requested, not the temporary annotated copies. Only saved files containing ${REVIEW_MARKER} are included.`;
 
-const HISTORY_COMMENT_INSTRUCTIONS = "In this review, @ai: marks past comments for context only; @@ marks current comments. Do not treat comments in earlier chat messages as new requests.";
+const HISTORY_COMMENT_INSTRUCTIONS = `In this review, @ai: marks past comments for context only; ${REVIEW_MARKER} marks current comments. Do not treat comments in earlier chat messages as new requests.`;
 
 const RANGE_REVIEW_INSTRUCTIONS = "The quoted collection contains numbered <reply> blocks, ordered oldest to newest. Use each block's index and surrounding text to locate my comments.";
 
@@ -120,7 +122,7 @@ function openReviewTag(tag: ReviewTag, subject: string, sourceFile?: string): st
 
 export function reviewPrompt(annotated: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
-		"Please address my added @@ comments below; other text is quoted context.",
+		`Please address my added ${REVIEW_MARKER} comments below; other text is quoted context.`,
 		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
 		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "files" ? [FILES_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
@@ -133,7 +135,7 @@ export const INLINE_REVIEW_BYTES = 16 * 1024;
 
 export function reviewFilePrompt(filePath: string, commentsPath: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [
-		"Please address my added @@ comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.",
+		`Please address my added ${REVIEW_MARKER} comments in the annotated file. Use rg/grep and read surrounding lines as needed, not the whole file.`,
 		...(tag === "reply" || tag === "replies" ? [HISTORY_COMMENT_INSTRUCTIONS] : []),
 		...(tag === "patch" ? [PATCH_REVIEW_INSTRUCTIONS] : tag === "file" ? [FILE_REVIEW_INSTRUCTIONS] : tag === "files" ? [FILES_REVIEW_INSTRUCTIONS] : tag === "replies" ? [RANGE_REVIEW_INSTRUCTIONS] : []),
 		"",
@@ -141,7 +143,7 @@ export function reviewFilePrompt(filePath: string, commentsPath: string, subject
 		`<annotated_file>${xmlEscape(filePath)}</annotated_file>`,
 		`<comments_file>${xmlEscape(commentsPath)}</comments_file>`,
 		...(process.platform === "win32" ? [`<command_shell>${commandShell()}</command_shell>`] : []),
-		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", "@@", filePath]))}</search_command>`,
+		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", REVIEW_MARKER, filePath]))}</search_command>`,
 		`</${tag}>`,
 	].join("\n");
 }
@@ -152,13 +154,13 @@ export function fileReviewSection(source: string, content: string): string {
 
 export function fileWorkspaceReferencePrompt(manifest: string, savedDirectory: string): string {
 	return [
-		"Please address my @@ comments in these saved file reviews. Read the manifest to map annotated copies to original files.",
+		`Please address my ${REVIEW_MARKER} comments in these saved file reviews. Read the manifest to map annotated copies to original files.`,
 		FILES_REVIEW_INSTRUCTIONS,
-		"Use rg/grep for @@ and read surrounding lines as needed; do not load every file in full.",
+		`Use rg/grep for ${REVIEW_MARKER} and read surrounding lines as needed; do not load every file in full.`,
 		"", "<files>",
 		`<review_manifest>${xmlEscape(manifest)}</review_manifest>`,
 		...(process.platform === "win32" ? [`<command_shell>${commandShell()}</command_shell>`] : []),
-		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", "@@", savedDirectory]))}</search_command>`,
+		`<search_command>${cdata(formatShellCommand("rg", ["-n", "-F", "--", REVIEW_MARKER, savedDirectory]))}</search_command>`,
 		"</files>",
 	].join("\n");
 }
@@ -169,8 +171,8 @@ ${filetype === "auto" ? "filetype on\nfiletype detect" : `setlocal filetype=${fi
 setlocal fileencoding=utf-8 fileformat=unix
 set nobackup nowritebackup
 set laststatus=2
-let &l:statusline = ' /re | Enter: comment below | ,a: inline @@ | save then quit to send %=%l/%L '
-syntax match PiReviewComment /@@.*$/
+let &l:statusline = ' /re | Enter: comment below | ,a: inline ${REVIEW_MARKER} | save then quit to send %=%l/%L '
+syntax match PiReviewComment /${REVIEW_MARKER}.*$/
 highlight default link PiReviewComment Todo
 `;
 }
@@ -178,8 +180,8 @@ highlight default link PiReviewComment Todo
 export const REVIEW_VIM_KEYMAPS = `cnoremap <buffer> <expr> <CR> <SID>ReviewCommand()
 nnoremap <buffer> ZZ :x<CR>
 nnoremap <buffer> ZQ :qall!<CR>
-nnoremap <buffer> <CR> o@@<Space>
-nnoremap <buffer> ,a A<Space>@@<Space>`;
+nnoremap <buffer> <CR> o${REVIEW_MARKER}<Space>
+nnoremap <buffer> ,a A<Space>${REVIEW_MARKER}<Space>`;
 
 /** Snapshot every successful write. :w then :q sends the LAST SAVED contents. */
 export function reviewVimScript(savedPath: string, filetype: "markdown" | "diff" | "auto" = "markdown"): string {

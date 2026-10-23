@@ -31,20 +31,36 @@ function withVim(filetype, commands, check) {
 }
 
 for (const filetype of ["markdown", "diff", "auto"]) {
-	test(`vim ${filetype}: Normal-mode Enter starts a new @@ comment below`, { skip: !installed }, () => {
+	test(`vim ${filetype}: Normal-mode Enter starts a new #REPLY: comment below`, { skip: !installed }, () => {
 		withVim(filetype, ['call feedkeys("\\<CR>Below comment\\<Esc>:wq\\<CR>", \'xt\')'], ({ saved }) => {
 			const content = readFileSync(saved, "utf8");
-			assert.match(content, /^Original response\.\n@@ Below comment\n/);
+			assert.match(content, /^Original response\.\n#REPLY: Below comment\n/);
 			assert.deepEqual(newComments("Original response.", content), [{ line: 2, text: "Below comment" }]);
 		});
 	});
 
-	test(`vim ${filetype}: ,a appends an inline @@ comment`, { skip: !installed }, () => {
+	test(`vim ${filetype}: ,a appends an inline #REPLY: comment`, { skip: !installed }, () => {
 		withVim(filetype, ['call feedkeys(",aInline comment\\<Esc>:wq\\<CR>", \'xt\')'], ({ saved }) => {
-			assert.match(readFileSync(saved, "utf8"), /^Original response\. @@ Inline comment\n/);
+			assert.match(readFileSync(saved, "utf8"), /^Original response\. #REPLY: Inline comment\n/);
 		});
 	});
 }
+
+test("vim highlights #REPLY: comments, not diff hunks, ??, or bare REPLY:", { skip: !installed }, () => {
+	withVim("diff", [
+		"call setline(1, ['@@ -1 +1 @@', 'const value = input ?? fallback;', 'REPLY: ordinary text', '#REPLY: Current comment', 'context #REPLY: Inline comment'])",
+		"let groups = []",
+		"for [lnum, column] in [[1, 1], [2, 21], [3, 1], [4, 1], [5, 9]]",
+		"  call add(groups, synIDattr(synID(lnum, column, 1), 'name'))",
+		"endfor",
+		"call writefile([json_encode(groups)], g:report_file)",
+		"qall!",
+	], ({ report }) => {
+		const groups = JSON.parse(readFileSync(report, "utf8"));
+		assert.ok(groups.slice(0, 3).every(group => group !== "PiReviewComment"));
+		assert.deepEqual(groups.slice(3), ["PiReviewComment", "PiReviewComment"]);
+	});
+});
 
 test("vim file copies detect their filetype from the preserved extension", { skip: !installed }, () => {
 	withVim("auto", ["call writefile([&l:filetype], g:report_file)", "qall!"], ({ report }) => {
@@ -71,8 +87,8 @@ test("vim shortcuts are normal-mode and buffer-local; other buffers and Insert-m
 		const bindings = JSON.parse(readFileSync(report, "utf8"));
 		assert.equal(bindings.enter.buffer, 1);
 		assert.equal(bindings.inline.buffer, 1);
-		assert.equal(bindings.enter.rhs, "o@@<Space>");
-		assert.equal(bindings.inline.rhs, "A<Space>@@<Space>");
+		assert.equal(bindings.enter.rhs, "o#REPLY:<Space>");
+		assert.equal(bindings.inline.rhs, "A<Space>#REPLY:<Space>");
 		assert.deepEqual(bindings.insert, {});
 		assert.deepEqual(bindings.other_enter, {});
 		assert.deepEqual(bindings.other_inline, {});

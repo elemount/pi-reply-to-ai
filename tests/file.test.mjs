@@ -76,7 +76,7 @@ test("FIFO references are rejected without waiting for a writer", { timeout: 500
 });
 
 test("file prompts distinguish the original source from the annotated private copy", () => {
-	for (const prompt of [reviewPrompt("source @@ comment", "this file", "file", '/tmp/source & "name".ts'),
+	for (const prompt of [reviewPrompt("source #REPLY: comment", "this file", "file", '/tmp/source & "name".ts'),
 		reviewFilePrompt("/tmp/copy.ts", "/tmp/comments.json", "this file", "file", '/tmp/source & "name".ts')]) {
 		assert.ok(prompt.includes('<file subject="this file" source="/tmp/source &amp; &quot;name&quot;.ts">'));
 		assert.match(prompt, /inspect the original file/i);

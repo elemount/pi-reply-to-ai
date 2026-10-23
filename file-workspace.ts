@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { INLINE_REVIEW_BYTES, fileReviewSection, fileWorkspaceReferencePrompt, reviewDocument, reviewPrompt } from "./core.ts";
+import { INLINE_REVIEW_BYTES, REVIEW_MARKER, fileReviewSection, fileWorkspaceReferencePrompt, reviewDocument, reviewPrompt } from "./core.ts";
 import { fileReview, resolveReviewPath } from "./file.ts";
 import { findReviewEditor, launchEditor } from "./editor.ts";
 import { fileWorkspaceVimScript } from "./file-workspace-vim.ts";
@@ -226,7 +226,7 @@ export async function createFileWorkspace(paths: readonly string[], cwd: string)
 					if (!info.isFile()) throw new Error("Saved review snapshot is not a regular file.");
 					if (info.size + bytes > MAX_OPEN_BYTES) throw new Error("Saved file reviews exceed the 64 MiB limit.");
 					const content = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(item.saved)); bytes += info.size;
-					if (content.includes("@@")) {
+					if (content.includes(REVIEW_MARKER)) {
 						if (process.platform !== "win32") chmodSync(item.saved, 0o600);
 						result.push({ source: item.source, content, filePath: item.saved });
 					} else remove(item.saved);
