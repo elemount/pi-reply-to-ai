@@ -65,7 +65,7 @@ const execute = promisify(execFile);
 const gitPrefix = ["--no-pager", "-c", "core.fsmonitor=false"];
 const diffOptions = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"];
 
-async function git(cwd: string, args: string[]): Promise<string> {
+async function git(cwd: string, args: string[], allowNoResult = false): Promise<string> {
 	try {
 		const result = await execute("git", [...gitPrefix, ...args], {
 			cwd, encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 * 1024,
@@ -73,7 +73,9 @@ async function git(cwd: string, args: string[]): Promise<string> {
 		});
 		return result.stdout;
 	} catch (cause) {
-		const error = cause as Error & { stderr?: string; code?: string };
+		const error = cause as Error & { stderr?: string; code?: string | number };
+		// symbolic-ref/config/merge-base use exit 1 for an absent optional result.
+		if (allowNoResult && error.code === 1) return "";
 		if (error.code === "ENOENT") throw new Error("Cannot find git. Install it before reviewing patches.");
 		if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error("Git output exceeds the 32 MiB capture limit. Review a smaller target.");
 		throw new Error(error.stderr?.trim() || error.message);
@@ -85,19 +87,66 @@ async function resolveCommit(cwd: string, revision: string): Promise<string> {
 	return (await git(cwd, ["rev-parse", "--verify", "--end-of-options", `${revision}^{commit}`])).trim();
 }
 
-async function defaultBase(cwd: string): Promise<string> {
-	const candidates: string[] = [];
-	try {
-		candidates.push((await git(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])).trim());
-	} catch { /* The local remote-HEAD reference is optional. No network access. */ }
-	candidates.push("refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master");
-	for (const candidate of candidates) {
-		try {
-			await resolveCommit(cwd, candidate);
-			return candidate;
-		} catch { /* Try the next conventional base. */ }
+interface PrBase { name: string; commit: string; source: string }
+interface BranchRef { name: string; commit: string; symbolic: string; upstream: string }
+const MAX_HISTORY_BASES = 256;
+
+/** Infer from local refs only. Commit ancestry is evidence, not a stored PR target. */
+async function prBase(cwd: string, head: string, explicit?: string): Promise<PrBase> {
+	if (explicit !== undefined) return { name: explicit, commit: await resolveCommit(cwd, explicit), source: "explicit argument" };
+	const current = (await git(cwd, ["symbolic-ref", "--quiet", "HEAD"], true)).trim();
+	const branch = current.replace(/^refs\/heads\//, "");
+	if (current) {
+		for (const setting of ["gh-merge-base", "vscode-merge-base"]) {
+			const key = `branch.${branch}.${setting}`;
+			const name = (await git(cwd, ["config", "--get", key], true)).trim();
+			if (!name) continue;
+			try { return { name, commit: await resolveCommit(cwd, name), source: key }; }
+			catch { throw new Error(`Configured PR base ${JSON.stringify(name)} from ${key} is unavailable. Update that setting or specify /re pr <base>.`); }
+		}
 	}
-	throw new Error("Cannot determine the PR base. Specify it explicitly, e.g. /re pr origin/main.");
+	const output = await git(cwd, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)%09%(upstream)%09%(objecttype)", "refs/heads/", "refs/remotes/"]);
+	const refs: BranchRef[] = output.trimEnd().split("\n").filter(Boolean).flatMap(line => {
+		const [name, commit, symbolic, upstream, type] = line.split("\t");
+		return type === "commit" ? [{ name, commit, symbolic, upstream }] : [];
+	});
+	const byName = new Map(refs.map(ref => [ref.name, ref]));
+	const defaults = [byName.get("refs/remotes/origin/HEAD")?.symbolic,
+		"refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"];
+	// A local base and its remote-tracking branch are one logical candidate; prefer the remote snapshot.
+	const canonical = (ref: BranchRef) => ref.upstream.startsWith("refs/remotes/") ? byName.get(ref.upstream) ?? ref : ref;
+	const defaultRef = defaults.map(name => name ? byName.get(name) : undefined).find(Boolean);
+	const fallback = defaultRef ? { ...canonical(defaultRef), source: "repository default" } : undefined;
+	const cannotDetermine = () => new Error("Cannot determine the PR base. Specify it explicitly, e.g. /re pr origin/main.");
+	if (!current) { if (fallback) return fallback; throw cannotDetermine(); }
+	const ownUpstream = byName.get(current)?.upstream;
+	const eligible = new Set((await git(cwd, ["for-each-ref", `--no-contains=${head}`, "--format=%(refname)", "refs/heads/", "refs/remotes/"])).trim().split("\n"));
+	// If HEAD is already in the default branch, do not resurrect changes using an older feature ref.
+	if (fallback && !eligible.has(fallback.name)) return fallback;
+	const groups = new Map<string, BranchRef[]>();
+	for (const ref of refs) {
+		if (ref.symbolic || ref.name === current || !eligible.has(ref.name) || canonical(ref).name !== ref.name) continue;
+		if (ref.name === ownUpstream || (ref.name.startsWith("refs/remotes/") && ref.name.split("/").slice(3).join("/") === branch)) continue;
+		const aliases = groups.get(ref.commit) ?? [];
+		aliases.push(ref); groups.set(ref.commit, aliases);
+	}
+	if (!groups.size) { if (fallback) return fallback; throw cannotDetermine(); }
+	if (groups.size > MAX_HISTORY_BASES) throw new Error(`More than ${MAX_HISTORY_BASES} possible PR bases. Specify /re pr <base> or configure branch.${branch}.gh-merge-base.`);
+	// Multiple arguments model a merge of the candidates: --all yields the ancestry frontier,
+	// not the branch with the newest timestamp or the shortest numeric commit count.
+	const points = (await git(cwd, ["merge-base", "--all", head, ...groups.keys()], true)).trim().split(/\s+/).filter(Boolean);
+	const ambiguous = () => new Error("Ambiguous PR base in Git history. Specify /re pr <base> or configure the current branch's gh-merge-base.");
+	if (points.length > 1) throw ambiguous();
+	if (!points.length) { if (fallback) return fallback; throw cannotDetermine(); }
+	const contains = new Set((await git(cwd, ["for-each-ref", `--contains=${points[0]}`, "--format=%(refname)", "refs/heads/", "refs/remotes/"])).trim().split("\n"));
+	const matches = [...groups.entries()].filter(([, aliases]) => aliases.some(ref => contains.has(ref.name)));
+	// When history gives the same diff as the known default, keep its stable identity.
+	if (fallback && matches.some(([, aliases]) => aliases.some(ref => ref.name === fallback.name))) return fallback;
+	const ancestor = matches.find(([commit]) => commit === points[0]);
+	const selected = ancestor ?? (matches.length === 1 ? matches[0] : undefined);
+	if (!selected) throw ambiguous();
+	const ref = selected[1].find(ref => ref.name.startsWith("refs/remotes/origin/")) ?? selected[1][0];
+	return { name: ref.name, commit: ref.commit, source: "Git history (inferred)" };
 }
 
 function gitCommand(cwd: string, args: string[]): string {
@@ -121,12 +170,12 @@ export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kin
 	} else {
 		const head = await resolveCommit(root, "HEAD");
 		if (target.kind === "pr") {
-			const baseName = target.base ?? await defaultBase(root);
-			const base = await resolveCommit(root, baseName);
+			const selected = await prBase(root, head, target.base);
+			const baseName = selected.name, base = selected.commit;
 			const mergeBaseArgs = ["merge-base", base, head];
 			const mergeBase = (await git(root, mergeBaseArgs)).trim();
 			header.unshift("# Git patch: PR changes");
-			header.push(`# Base: ${baseName} (${base})`, `# Merge base: ${mergeBase}`, `# Head: ${head}`,
+			header.push(`# Base: ${baseName} (${base})`, `# Base selection: ${selected.source}`, `# Merge base: ${mergeBase}`, `# Head: ${head}`,
 				`# Merge-base command: ${gitCommand(root, mergeBaseArgs)}`);
 			patchArgs = ["diff", ...diffOptions, mergeBase, head, "--"];
 		} else {

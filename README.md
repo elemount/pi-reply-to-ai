@@ -134,7 +134,28 @@ The **16 KiB limit applies to the entire saved collection**, including section m
 
 The long Git command names remain valid; `c`, `p`, and `d` are aliases for `commit`, `pr`, and `diff`.
 
-For PRs, the extension tries the local `origin/HEAD` reference first, then `origin/main`, `origin/master`, `main`, and `master`. It never fetches or queries GitHub. For a different PR target branch, pass the base explicitly. The diff is `git diff $(git merge-base BASE HEAD) HEAD`, not a direct comparison with the latest base-branch tip.
+### PR base selection
+
+`/re pr` and `/re p` select a base **offline**, in this order:
+
+1. An explicit argument, e.g. `/re pr origin/parent-feature`.
+2. The current branch's Git configuration: `branch.<name>.gh-merge-base`, then `branch.<name>.vscode-merge-base`.
+3. Git history: the nearest unambiguous shared ancestor among local and remote-tracking branch refs. This supports stacked branches even if their parent has advanced after the fork.
+4. The repository default: the local `origin/HEAD` reference, then `origin/main`, `origin/master`, `main`, and `master`.
+
+History inference excludes the current branch, its own remote-tracking refs (including a renamed upstream), and refs already containing `HEAD`. Local bases that track an available remote ref use that remote snapshot; aliases at the same commit count once. Selection uses commit ancestry, not timestamps or the smallest commit count. If the known default gives the same merge base, its identity is retained. If `HEAD` is already in the default branch, the review stays empty rather than resurrecting changes from older feature refs.
+
+Multiple plausible parents or incomparable ancestry points require an explicit base instead of guessing. History inference also stops at more than 256 distinct candidate commits; a recorded or explicit base bypasses that scan. Detached HEAD falls back to the repository default unless a base is supplied explicitly. An unavailable configured base reports an error rather than silently changing the comparison.
+
+Git does not store a PR's intended target branch, so history is a heuristic, not a guarantee of the GitHub target after complex merges/rebases. Pin the intended base for deterministic stacked reviews, for example:
+
+```bash
+git config branch.my-feature.gh-merge-base origin/parent-feature
+```
+
+The extension only reads these settings; it never writes them, fetches, or queries GitHub. It requires no GitHub CLI or authentication. Remote-tracking refs are local snapshots; update them yourself if needed. The review header records `# Base`, `# Base selection`, and `# Merge base` so the choice is visible.
+
+The diff remains `git diff $(git merge-base BASE HEAD) HEAD`, not a direct comparison with the latest base-branch tip. All unmerged feature changes are included, including changes made before a later merge from the base branch.
 
 ### File references
 

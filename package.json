@@ -1,6 +1,6 @@
 {
   "name": "@elemount/pi-reply-to-ai",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Personal Pi extension for replying to AI messages, files, and Git patches with Vim annotations.",
   "type": "module",
