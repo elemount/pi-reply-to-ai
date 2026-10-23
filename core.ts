@@ -172,8 +172,13 @@ setlocal fileencoding=utf-8 fileformat=unix
 set nobackup nowritebackup
 set laststatus=2
 let &l:statusline = ' /re | Enter: comment below | ,a: inline ${REVIEW_MARKER} | save then quit to send %=%l/%L '
-syntax match PiReviewComment /${REVIEW_MARKER}.*$/
-highlight default link PiReviewComment Todo
+if &l:filetype ==# 'diff'
+  setlocal syntax=OFF
+  syntax clear
+else
+  syntax match PiReviewComment /${REVIEW_MARKER}.*$/
+  highlight default link PiReviewComment Todo
+endif
 `;
 }
 

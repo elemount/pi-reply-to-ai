@@ -9,12 +9,13 @@ import { prepareFileWorkspaceReview } from "../file-workspace.ts";
 
 const installed = spawnSync("vim", ["--version"], { encoding: "utf8" }).status === 0;
 
-async function runWorkspace({ tree, commands, check, countPaths = false }) {
+async function runWorkspace({ tree, commands, check, countPaths = false, extraFiles = {}, paths = ["a.ts", "b.ts"], syntax = false }) {
 	const root = mkdtempSync(join(tmpdir(), "pi-real-workspace-"));
 	const lifecycle = [], observed = {};
 	let result;
 	try {
 		writeFileSync(join(root, "a.ts"), "const a = 1;\n"); writeFileSync(join(root, "b.ts"), "const b = 2;\n");
+		for (const [name, content] of Object.entries(extraFiles)) writeFileSync(join(root, name), content);
 		mkdirSync(join(root, "nested")); writeFileSync(join(root, "nested", "unused.ts"), "unused\n");
 		const driver = join(root, "driver.vim"), report = join(root, "report.json"), log = join(root, "vim.log");
 		// Create the driver only after directory enumeration, so it is not a tree candidate.
@@ -38,11 +39,13 @@ async function runWorkspace({ tree, commands, check, countPaths = false }) {
 			].join("\n"));
 			const separator = args.indexOf("--");
 			try {
-				await launchEditor(editor, ["-u", "NONE", "-es", "-V1" + log, ...args.slice(0, separator), "-S", driver, ...args.slice(separator)], cwd);
+				await launchEditor(editor, ["-u", "NONE", "-es", "-V1" + log,
+					...(syntax ? ["--cmd", "filetype on | syntax on"] : []),
+					...args.slice(0, separator), "-S", driver, ...args.slice(separator)], cwd);
 			} catch (error) { throw new Error(String(error) + "\n" + (existsSync(log) ? readFileSync(log, "utf8") : "")); }
 			observed.loaded = manifest.files.filter(file => existsSync(file.copy)).map(file => basename(file.source));
 		};
-		result = await prepareFileWorkspaceReview(tree ? [root] : ["a.ts", "b.ts"], ctx, runner);
+		result = await prepareFileWorkspaceReview(tree ? [root] : paths, ctx, runner);
 		assert.deepEqual(lifecycle, ["stop", "start"]);
 		assert.equal(readFileSync(join(root, "a.ts"), "utf8"), "const a = 1;\n");
 		assert.equal(readFileSync(join(root, "b.ts"), "utf8"), "const b = 2;\n");
@@ -64,6 +67,35 @@ test("real Vim opens explicit files in separate tabs with #REPLY: shortcuts and 
 		assert.match(result.prompt, /#REPLY: First comment/); assert.match(result.prompt, /#REPLY: Second comment/);
 	} });
 });
+
+for (const tree of [false, true]) {
+	test(`real Vim ${tree ? "tree" : "tabs"}: diff colors stay off without affecting source-file highlighting`, { skip: !installed, timeout: 15000 }, async () => {
+		const openDiff = [...(tree ? ["ReTree", "call cursor(1, 1)", "call search('review.diff$', 'W')", 'call feedkeys("\\<CR>", \'xt\')'] : ["tabfirst"]), "call cursor(1, 1)"];
+		const openCode = [...(tree ? ["ReTree", "call cursor(1, 1)", "call search('a.ts$', 'W')", 'call feedkeys("\\<CR>", \'xt\')'] : ["tabnext"]), "call cursor(1, 1)"];
+		await runWorkspace({ tree, syntax: true, extraFiles: { "review.diff": "@@ -1 +1 @@\n-old\n+new\n" }, paths: ["review.diff", "a.ts"], commands: [
+			...openDiff,
+			'call feedkeys(",aDiff comment\\<Esc>:w\\<CR>", \'xt\')',
+			"let result = {'filetype': &l:filetype, 'syntax': &l:syntax, 'hunk_color': synIDattr(synID(1, 1, 1), 'name'), 'comment_color': synIDattr(synID(1, match(getline(1), '#REPLY:') + 1, 1), 'name')}",
+			...openCode,
+			'call feedkeys(",aCode comment\\<Esc>:w\\<CR>", \'xt\')',
+			"let result.code_syntax = &l:syntax",
+			"let result.code_color = synIDattr(synID(1, match(getline(1), '#REPLY:') + 1, 1), 'name')",
+			"let result.native_code_color = synIDattr(synID(1, 1, 1), 'name')",
+			...openDiff,
+			"let result.reopened_syntax = &l:syntax",
+			"call writefile([json_encode(result)], g:report_file)",
+			"qall!",
+		], check: ({ result, report }) => {
+			const { native_code_color, ...state } = JSON.parse(readFileSync(report, "utf8"));
+			assert.deepEqual(state, {
+				filetype: "diff", syntax: "OFF", hunk_color: "", comment_color: "",
+				code_syntax: "typescript", code_color: "PiReviewComment", reopened_syntax: "OFF",
+			});
+			assert.ok(native_code_color);
+			assert.ok(result); assert.match(result.prompt, /#REPLY: Diff comment/); assert.match(result.prompt, /#REPLY: Code comment/);
+		} });
+	});
+}
 
 test("real Vim directory tree is read-only and lazy-opens only selected copies", { skip: !installed, timeout: 15000 }, async () => {
 	await runWorkspace({ tree: true, commands: [

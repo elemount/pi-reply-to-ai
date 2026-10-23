@@ -8,9 +8,9 @@ import { newComments, reviewDocument, reviewVimScript } from "../core.ts";
 
 const installed = spawnSync("vim", ["--version"], { encoding: "utf8" }).status === 0;
 
-function withVim(filetype, commands, check) {
+function withVim(filetype, commands, check, { extension, syntax = false } = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-keys-"));
-	const file = join(directory, `editing.${filetype === "diff" ? "diff" : filetype === "auto" ? "py" : "md"}`);
+	const file = join(directory, `editing.${extension ?? (filetype === "diff" ? "diff" : filetype === "auto" ? "py" : "md")}`);
 	const saved = join(directory, "saved.txt");
 	const report = join(directory, "report.json");
 	try {
@@ -23,6 +23,7 @@ function withVim(filetype, commands, check) {
 			"cquit 70", // A tested quit sequence must exit before reaching this line.
 		].join("\n"));
 		const result = spawnSync("vim", ["-u", "NONE", "-i", "NONE", "-n", "-es",
+			...(syntax ? ["--cmd", "filetype on | syntax on"] : []),
 			"-S", join(directory, "review.vim"), "-S", join(directory, "driver.vim"), "--", file,
 		], { encoding: "utf8", timeout: 10000 });
 		assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
@@ -46,8 +47,8 @@ for (const filetype of ["markdown", "diff", "auto"]) {
 	});
 }
 
-test("vim highlights #REPLY: comments, not diff hunks, ??, or bare REPLY:", { skip: !installed }, () => {
-	withVim("diff", [
+test("vim still highlights #REPLY: in chat reviews, not @@, ??, or bare REPLY:", { skip: !installed }, () => {
+	withVim("markdown", [
 		"call setline(1, ['@@ -1 +1 @@', 'const value = input ?? fallback;', 'REPLY: ordinary text', '#REPLY: Current comment', 'context #REPLY: Inline comment'])",
 		"let groups = []",
 		"for [lnum, column] in [[1, 1], [2, 21], [3, 1], [4, 1], [5, 9]]",
@@ -61,6 +62,33 @@ test("vim highlights #REPLY: comments, not diff hunks, ??, or bare REPLY:", { sk
 		assert.deepEqual(groups.slice(3), ["PiReviewComment", "PiReviewComment"]);
 	});
 });
+
+for (const [filetype, extension] of [["diff", "diff"], ["auto", "diff"], ["auto", "patch"]]) {
+	test(`vim ${filetype} .${extension}: no diff or annotation colors even when syntax is enabled`, { skip: !installed }, () => {
+		withVim(filetype, [
+			"call setline(1, ['diff --git a/file b/file', '@@ -1 +1 @@', '-old', '+new', '#REPLY: Comment', 'context #REPLY: Inline'])",
+			"let result = {'filetype': &l:filetype, 'syntax': &l:syntax, 'enabled': exists('g:syntax_on'), 'colors': []}",
+			"for lnum in range(1, line('$'))",
+			"  for column in range(1, strlen(getline(lnum)))",
+			"    let name = synIDattr(synID(lnum, column, 1), 'name')",
+			"    if !empty(name) | call add(result.colors, name) | endif",
+			"  endfor",
+			"endfor",
+			"enew!",
+			"setfiletype python",
+			"call setline(1, 'def example():')",
+			"let result.other_syntax = &l:syntax",
+			"let result.other_color = synIDattr(synID(1, 1, 1), 'name')",
+			"call writefile([json_encode(result)], g:report_file)",
+			"qall!",
+		], ({ report }) => {
+			const result = JSON.parse(readFileSync(report, "utf8"));
+			assert.equal(result.filetype, "diff"); assert.equal(result.syntax, "OFF");
+			assert.equal(result.enabled, 1); assert.deepEqual(result.colors, []);
+			assert.equal(result.other_syntax, "python"); assert.ok(result.other_color);
+		}, { extension, syntax: true });
+	});
+}
 
 test("vim file copies detect their filetype from the preserved extension", { skip: !installed }, () => {
 	withVim("auto", ["call writefile([&l:filetype], g:report_file)", "qall!"], ({ report }) => {

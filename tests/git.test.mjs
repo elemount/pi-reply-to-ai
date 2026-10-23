@@ -215,7 +215,7 @@ test("review padding and prompts preserve significant trailing whitespace in pat
 	assert.ok(reviewPrompt(patch, "this Git patch", "patch").includes("<![CDATA[\n" + patch + "]]></patch>"));
 });
 
-test("patch prompts identify Git patches in XML and use diff highlighting", () => {
+test("patch prompts identify Git patches in XML and retain the diff filetype without syntax colors", () => {
 	const inline = reviewPrompt("patch #REPLY: comment", "this Git patch", "patch");
 	assert.match(inline, /<patch subject="this Git patch"><!\[CDATA\[\npatch #REPLY: comment\n\]\]><\/patch>/);
 	assert.doesNotMatch(inline, /<review|<document/);
@@ -223,5 +223,7 @@ test("patch prompts identify Git patches in XML and use diff highlighting", () =
 	assert.match(filePrompt, /<patch subject="this Git patch">/);
 	assert.match(filePrompt, /<annotated_file>\/tmp\/review.diff<\/annotated_file>/);
 	assert.ok(filePrompt.endsWith("</patch>"));
-	assert.match(reviewVimScript("/tmp/review.diff", "diff"), /filetype=diff/);
+	const script = reviewVimScript("/tmp/review.diff", "diff");
+	assert.match(script, /filetype=diff/);
+	assert.match(script, /if &l:filetype ==# 'diff'\n  setlocal syntax=OFF\n  syntax clear/);
 });
