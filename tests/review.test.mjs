@@ -320,7 +320,7 @@ test("any save followed by quit sends the last saved version, not later unsaved 
 });
 
 test("large UTF-8 documents and huge comments stay on disk with bounded prompts", async () => {
-	for (const [mode, original] of [["submit", "\u539f".repeat(3000)], ["huge-comment", "Original"]]) {
+	for (const [mode, original] of [["submit", "\u539f".repeat(Math.ceil(INLINE_REVIEW_BYTES / 3))], ["huge-comment", "Original"]]) {
 		await fakeEditor(mode, async (invocation) => {
 			const h = harness([assistant(original)]); await h.command();
 			const { file, saved } = invocation();
@@ -348,17 +348,17 @@ test("large UTF-8 documents and huge comments stay on disk with bounded prompts"
 	}
 });
 
-test("8 KiB boundary includes exact-size documents inline and retains larger ones", async () => {
-	assert.equal(INLINE_REVIEW_BYTES, 8 * 1024);
+test("16 KiB boundary includes mid-size and exact-size documents inline and retains larger ones", async () => {
+	assert.equal(INLINE_REVIEW_BYTES, 16 * 1024);
 	const suffix = "\n\n\nInline context @@ Add an example\n@@ Explain edge cases\n";
-	for (const bytes of [INLINE_REVIEW_BYTES, INLINE_REVIEW_BYTES + 1]) {
+	for (const bytes of [12 * 1024, INLINE_REVIEW_BYTES, INLINE_REVIEW_BYTES + 1]) {
 		await fakeEditor("submit", async (invocation) => {
 			const original = "x".repeat(bytes - Buffer.byteLength(suffix));
 			const h = harness([assistant(original)]); await h.command();
 			const { saved } = invocation();
 			try {
 				assert.equal(h.sent.length, 1);
-				if (bytes === INLINE_REVIEW_BYTES) {
+				if (bytes <= INLINE_REVIEW_BYTES) {
 					assert.match(h.sent[0][0], /Add an example/);
 					assert.doesNotMatch(h.sent[0][0], /<comments_file>|comments\.json/);
 					assert.equal(existsSync(saved), false);
@@ -465,7 +465,7 @@ test("inline and unmarked file reviews skip comment parsing, including saved emp
 test("large @file reviews preserve private copies and source references, not full inline contents", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-review-source-"));
 	try {
-		const source = join(directory, "large.md"); const content = "source line\n".repeat(1000); writeFileSync(source, content);
+		const source = join(directory, "large.md"); const content = "source line\n".repeat(Math.ceil(INLINE_REVIEW_BYTES / 12)); writeFileSync(source, content);
 		await fakeEditor("submit", async (invocation) => {
 			const h = harness([]); h.ctx.cwd = directory; await h.command("@large.md");
 			const { saved } = invocation();
@@ -558,10 +558,29 @@ test("file workspaces submit saved marker presence only and clean up cancelled/c
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("files and directory collections between 8 and 16 KiB are sent inline", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-command-inline-"));
+	try {
+		writeFileSync(join(directory, "a.txt"), "x".repeat(5000)); writeFileSync(join(directory, "b.txt"), "y".repeat(5000));
+		writeFileSync(join(directory, "single.txt"), "z".repeat(12 * 1024));
+		for (const args of ["@single.txt", "@a.txt @b.txt", "@."]) {
+			await fakeEditor("submit", async invocation => {
+				const h = harness([]); h.ctx.cwd = directory; await h.command(args);
+				assert.equal(h.sent.length, 1); const prompt = h.sent[0][0];
+				assert.ok(Buffer.byteLength(prompt) > 8 * 1024 && Buffer.byteLength(prompt) < INLINE_REVIEW_BYTES);
+				assert.match(prompt, /@@ (?:File comment|Add an example)/);
+				assert.doesNotMatch(prompt, /<annotated_file>|<review_manifest>|<comments_file>/);
+				const launched = invocation();
+				assert.equal(existsSync(launched.workspace ?? dirname(launched.saved)), false);
+			});
+		}
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("large file workspaces reference a per-file source manifest instead of embedding contents", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-command-files-"));
 	try {
-		writeFileSync(join(directory, "a.txt"), "x".repeat(5000)); writeFileSync(join(directory, "b.txt"), "y".repeat(5000));
+		writeFileSync(join(directory, "a.txt"), "x".repeat(INLINE_REVIEW_BYTES / 2 + 1)); writeFileSync(join(directory, "b.txt"), "y".repeat(INLINE_REVIEW_BYTES / 2 + 1));
 		await fakeEditor("submit", async invocation => {
 			const h = harness([]); h.ctx.cwd = directory; await h.command("@a.txt @b.txt");
 			const workspace = invocation().workspace;
@@ -614,7 +633,7 @@ test("ranges demote every past marker while keeping current comments and reply i
 
 test("large chat collections keep historical markers out of the current comment index", async () => {
 	await fakeEditor("submit", async (invocation) => {
-		const h = harness([assistant("older @@ old comment\n" + "x".repeat(9000)), assistant("latest @@ another past comment")]);
+		const h = harness([assistant("older @@ old comment\n" + "x".repeat(INLINE_REVIEW_BYTES)), assistant("latest @@ another past comment")]);
 		await h.command("0-1");
 		const { saved } = invocation();
 		try {
@@ -678,8 +697,8 @@ test("subranges and message N-M select only the requested replies", async () => 
 	}
 });
 
-test("collection size, not individual reply size, controls the 8 KiB file-reference path", async () => {
-	const older = "older " + "x".repeat(4500), latest = "latest " + "y".repeat(4500);
+test("collection size, not individual reply size, controls the 16 KiB file-reference path", async () => {
+	const older = "older " + "x".repeat(INLINE_REVIEW_BYTES / 2), latest = "latest " + "y".repeat(INLINE_REVIEW_BYTES / 2);
 	assert.ok(Buffer.byteLength(older) < INLINE_REVIEW_BYTES && Buffer.byteLength(latest) < INLINE_REVIEW_BYTES);
 	await fakeEditor("submit", async (invocation) => {
 		const h = harness([assistant(older), assistant(latest)]); await h.command("0-1");
@@ -745,7 +764,7 @@ test("numeric targets select the requested AI reply without counting user/tool m
 
 test("large earlier replies retain the requested reply and XML subject", async () => {
 	await fakeEditor("submit", async (invocation) => {
-		const h = harness([assistant("older ".repeat(2000)), assistant("latest")]);
+		const h = harness([assistant("older ".repeat(Math.ceil(INLINE_REVIEW_BYTES / 6))), assistant("latest")]);
 		await h.command("1");
 		const { saved } = invocation();
 		try {
@@ -807,7 +826,7 @@ test("unchanged patch hunk headers do not trigger a response", async () => {
 
 test("large Git patches retain .diff files and get short source-aware prompts", async () => {
 	await withRepository(async ({ cwd, write, commit }) => {
-		write("large.txt", "x".repeat(9000) + "\n"); commit();
+		write("large.txt", "x".repeat(INLINE_REVIEW_BYTES) + "\n"); commit();
 		await fakeEditor("submit", async (invocation) => {
 			const h = harness(); h.ctx.cwd = cwd;
 			await h.command("commit");

@@ -128,8 +128,8 @@ export function reviewPrompt(annotated: string, subject = "your latest response"
 	].join("\n");
 }
 
-/** Full documents up to 8 KiB (UTF-8) are included inline; larger ones stay on disk. */
-export const INLINE_REVIEW_BYTES = 8 * 1024;
+/** Full documents up to 16 KiB (UTF-8) are included inline; larger ones stay on disk. */
+export const INLINE_REVIEW_BYTES = 16 * 1024;
 
 export function reviewFilePrompt(filePath: string, commentsPath: string, subject = "your latest response", tag: ReviewTag = "reply", sourceFile?: string): string {
 	return [

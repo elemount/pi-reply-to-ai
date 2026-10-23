@@ -130,7 +130,7 @@ Message indexes count **AI text replies only**, newest first, in the active sess
 
 The temporary file orders the selected replies **oldest to newest**, so `/re 0-10` displays indexes 10 down to 0. Each reply has its own `<reply index="N">` section with safely quoted text. Keep the index labels intact and add `@@` comments near the relevant text, then save and quit to submit the whole review once.
 
-The **8 KiB limit applies to the entire saved collection**, including section markup and comments, not to each reply separately. Large collections remain on disk and are referenced by a short prompt. Unavailable ranges report the available indexes instead of silently returning fewer replies. Invalid or reversed ranges are rejected before opening Vim. Ctrl+Alt+R still reviews only the latest reply.
+The **16 KiB limit applies to the entire saved collection**, including section markup and comments, not to each reply separately. Large collections remain on disk and are referenced by a short prompt. Unavailable ranges report the available indexes instead of silently returning fewer replies. Invalid or reversed ranges are rejected before opening Vim. Ctrl+Alt+R still reviews only the latest reply.
 
 The long Git command names remain valid; `c`, `p`, and `d` are aliases for `commit`, `pr`, and `diff`.
 
@@ -142,7 +142,7 @@ Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to 
 
 The extension reads a regular UTF-8 text file and opens a private temporary copy. The original is never opened for writing by the extension, including on save, cancellation, or editor failure. Empty files and read-only sources are supported. Binary/non-UTF-8 files and files over 32 MiB are rejected when opened. Directories use the workspace flow below. Symlinks resolve to the actual source path.
 
-The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). Scratch copies use UTF-8 and LF line endings, including when the original uses CRLF; the original is not rewritten. The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 8 KiB rule as other targets.
+The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). Scratch copies use UTF-8 and LF line endings, including when the original uses CRLF; the original is not rewritten. The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 16 KiB rule as other targets.
 
 ### Directories and multiple files
 
@@ -156,7 +156,7 @@ Save the current file with **`:w`**. Use **`:wqa`** to save all modified review 
 
 Submission is intentionally simple: **only saved copies containing the literal `@@` marker are included**, once per source file. There is no source diff or old/new comment comparison for file references. Even an existing or empty `@@` counts. Unsaved edits, unmarked copies, the tree, and preview buffers are excluded. `:q` / `:qa!` discard unsaved changes, but previously saved marked versions still submit. Remove `@@` and save again to exclude a file.
 
-All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 8 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `@@`.
+All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 16 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `@@`.
 
 Limits: 64 input references, 2,000 reviewable directory files, and 64 MiB total opened-copy/saved-review data. Narrow the selection if a limit is reached. Git listing has a 30-second timeout.
 
@@ -228,10 +228,10 @@ Writes are tracked using Vim events, so mappings and commands such as `:wall` an
 
 ## Message size
 
-The inline-message limit is **8 KiB of UTF-8 review bytes**, including trailing blank lines; multi-file workspaces count the combined source-tagged collection.
+The inline-message limit is **16 KiB of UTF-8 review bytes**, including trailing blank lines; multi-file workspaces count the combined source-tagged collection.
 
-- **Up to 8 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
-- **Over 8 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
+- **Up to 16 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
+- **Over 16 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
 
 Large multi-file workspaces use `reviews.json` instead: it contains only the included source-file/annotated-copy mappings, not a duplicated comment index. The private `saved` folder contains only included snapshots, so the AI can search it for `@@` and read relevant context.
 
