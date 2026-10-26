@@ -19,7 +19,9 @@ Reviews start Neovim normally with **your configuration, plugins, theme, and
 keymaps**, then load the review runtime. No `--clean`, replacement `init.lua`, or
 reset of global options. Filetype plugins, indentation, syntax and Tree-sitter
 follow your configuration. Only review-owned buffers get read-only/file-write
-protections. Existing Pi sessions need `/reload` after extension updates.
+protections. Each review starts a fresh Neovim process; the review opens directly
+in `VimEnter` after synchronous startup hooks, without an extra scheduled
+welcome-screen step. Existing Pi sessions need `/reload` after extension updates.
 
 For Git reviews, run **`/re setup` once** to install Diffview at the tested commit
 `4516612fe98ff56ae0415a259ff6361a89419b0a`. This explicit setup downloads it into
@@ -96,9 +98,11 @@ range, and **`:wq`** to save and close.
 
 Simple Markdown: source path, line/range, old/new side and fixed revision where
 applicable, a short numbered excerpt, and your comment. No full annotated file or
-diff copies, no thread database, and no public JSON schema. Selected AI replies
-are quoted in full, since conversation compaction can otherwise remove them.
-Fences safely quote Markdown tables, code fences, XML, and arbitrary comment text.
+diff copies, no thread database, and no public JSON schema. AI reply reviews also
+include only excerpts near commented lines, never the full selected replies or
+replies without comments. Excerpts include up to two surrounding lines on each
+side; long ranges and lines are truncated. Fences safely quote Markdown tables,
+code fences, XML, and arbitrary comment text.
 
 The **complete exported Markdown** is sent directly when it is at most
 **16 KiB (16,384 UTF-8 bytes)**. Only larger reviews retain a private `review.md`
@@ -106,7 +110,7 @@ and send a reference. Temporary editor data and Git metadata are cleaned up;
 large retained review documents are deliberately left for the AI to read.
 
 `#REPLY:` is only a label in the export. Literal `#REPLY:`, `@@`, or `??` in sources
-never creates a comment. Historical replies are preserved verbatim as quoted context.
+never creates a comment. Quoted excerpts preserve historical text as reference only.
 
 ## Git base selection (offline)
 

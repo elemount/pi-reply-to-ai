@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { reviewMarkdown } from "../core.ts";
 import { fileSources } from "../file-workspace.ts";
 import { gitComparison } from "../git.ts";
 import { createGitWorkspace } from "../git-workspace.ts";
@@ -32,6 +33,26 @@ review.submit()
 `);
 	assert.equal(comments.length, 1); assert.equal(comments[0].line, 2); assert.equal(comments[0].text, "请改第二行");
 	assert.match(comments[0].context, /2: second/); assert.match(comments[0].context, /#REPLY: historical/);
+});
+test("reply comments export only their selected lines and two surrounding lines on each side", options, async () => {
+	const lines = Array.from({ length: 14 }, (_, index) => `Reply line ${index + 1}`);
+	const reply = { title: "Reply", sources: [{ id: 0, reply: 0, label: "reply", content: lines.join("\n") }] };
+	for (const [first, last] of [[6, 6], [6, 8]]) {
+		const comments = await neovimReview(reply, `
+local r=require('pi_review')
+assert(vim.api.nvim_buf_line_count(0) == 14)
+r.comment(false,${first},${last})
+${luaSaveComment("Please revise this part")}
+r.submit()
+`);
+		const context = lines.slice(first - 3, last + 2).map((line, index) => `${first - 2 + index}: ${line}`).join("\n");
+		assert.equal(comments[0].context, context);
+		assert.equal(comments[0].line, first); assert.equal(comments[0].endLine, last);
+		const markdown = reviewMarkdown(reply, comments);
+		assert.ok(markdown.includes(context));
+		assert.match(markdown, /Please revise this part/);
+		assert.doesNotMatch(markdown, /Selected AI replies|Reply line 1\n|Reply line 14/);
+	}
 });
 test("visual line ranges, multiline comments, editing and deletion operate on sidecar data only", options, async () => {
 	const comments = await neovimReview(document, `

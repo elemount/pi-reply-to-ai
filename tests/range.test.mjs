@@ -51,13 +51,21 @@ test("unavailable ranges report the actual available interval without partial re
 	}
 });
 
-test("exports retain full numbered original replies, without rewriting historical markers", () => {
+test("reply exports retain numbered comment excerpts, not full replies or uncommented selections", () => {
 	const text = 'Code ``` </reply> & <tag> ]]> #REPLY: existing 中文';
-	const sources = [{ id: 0, reply: 1, label: "old", content: text }, { id: 1, reply: 0, label: "new", content: "latest" }];
-	const markdown = reviewMarkdown({ title: "Replies", sources }, [{ source: 1, line: 1, endLine: 1, context: "1: latest", text: "New comment" }]);
-	assert.ok(markdown.includes(text));
-	assert.ok(markdown.indexOf("### AI reply 1") < markdown.indexOf("### AI reply 0"));
-	assert.match(markdown, /AI reply 0 — lines 1/);
-	assert.match(markdown, /oldest first/);
+	const sources = [
+		{ id: 0, reply: 2, label: "old", content: `unrelated old content\n${text}` },
+		{ id: 1, reply: 1, label: "middle", content: "uncommented reply" },
+		{ id: 2, reply: 0, label: "new", content: "latest\nunrelated latest content" },
+	];
+	const comments = [
+		{ source: 0, line: 2, endLine: 2, context: `2: ${text}`, text: "Old reply comment" },
+		{ source: 2, line: 1, endLine: 1, context: "1: latest", text: "New comment" },
+	];
+	const markdown = reviewMarkdown({ title: "Replies", sources }, comments);
+	for (const comment of comments) assert.ok(markdown.includes(comment.context));
+	assert.ok(markdown.indexOf("### AI reply 2 — lines 2") < markdown.indexOf("### AI reply 0 — lines 1"));
+	assert.doesNotMatch(markdown, /Selected AI replies|AI reply 1|uncommented reply|unrelated old content|unrelated latest content/);
+	assert.match(markdown, /0 was newest when this review started/);
 	assert.match(markdown, /#REPLY:\n```\nNew comment/);
 });

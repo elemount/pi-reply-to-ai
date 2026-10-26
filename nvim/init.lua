@@ -9,12 +9,14 @@ local function start()
   end
 end
 
--- Let the user's startup hooks finish before opening the review.
+-- Run after the user's synchronous startup hooks, without deferring the review
+-- to a later tick that could first draw the welcome buffer.
 if vim.v.vim_did_enter == 1 then
-  vim.schedule(start)
+  start()
 else
   vim.api.nvim_create_autocmd("VimEnter", {
     once = true,
-    callback = function() vim.schedule(start) end,
+    nested = true, -- Opening sources must still trigger FileType/BufEnter/User hooks.
+    callback = start,
   })
 end

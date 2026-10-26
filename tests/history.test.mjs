@@ -15,6 +15,12 @@ test("source marker text is quoted verbatim and never becomes comment data", () 
 	const source = { id: 0, reply: 0, label: "reply", content: original };
 	assert.deepEqual(validateComments([], [source]), []);
 	const result = reviewMarkdown({ title: "Replies", sources: [source] }, []);
-	assert.ok(result.includes(original)); assert.doesNotMatch(result, /@ai:/);
+	assert.ok(!result.includes(original)); assert.doesNotMatch(result, /@ai:/);
 	assert.equal(result.split("## Comments")[1].trim(), "");
+	const context = original.split("\n").map((line, index) => `${index + 1}: ${line}`).join("\n");
+	const markdown = reviewMarkdown({ title: "Replies", sources: [source] }, [
+		{ source: 0, line: 3, endLine: 3, context, text: "My current request" },
+	]);
+	assert.ok(markdown.includes(context));
+	assert.match(markdown, /#REPLY:\n```\nMy current request/);
 });

@@ -80,6 +80,50 @@ end
 	assert.equal(comments[0].text, "comment using my configuration");
 });
 
+test("review opens after user VimEnter hooks but before the first scheduled startup tick", { skip: !hasNeovim }, async () => {
+	assert.deepEqual(await neovimReview(reply, `
+assert(vim.g.review_on_first_tick, 'First startup tick still saw the welcome buffer')
+assert(vim.g.review_ready_on_first_tick, 'Review readiness was deferred to another tick')
+assert(vim.g.startup_hook_before_review)
+assert(vim.g.review_filetype_on_first_tick == 'markdown')
+assert(vim.b.startup_ftplugin and vim.bo.textwidth == 73)
+assert(vim.bo.readonly and not vim.bo.modifiable)
+require('pi_review').submit()
+`, { userConfig: `
+vim.cmd('syntax enable')
+vim.api.nvim_create_autocmd('VimEnter', { once=true, callback=function()
+  vim.g.user_startup_finished=true
+  vim.schedule(function()
+    vim.g.review_on_first_tick=vim.b.pi_review_source ~= nil
+    vim.g.review_ready_on_first_tick=vim.g.review_ready == true
+    vim.g.review_filetype_on_first_tick=vim.bo.filetype
+  end)
+end })
+vim.api.nvim_create_autocmd('User', { pattern='PiReviewReady', once=true, callback=function()
+  vim.g.review_ready=true
+  vim.g.startup_hook_before_review=vim.g.user_startup_finished == true
+end })
+`, userFiles: {
+		'after/ftplugin/markdown.lua': 'vim.b.startup_ftplugin=true; vim.bo.textwidth=73; vim.bo.modifiable=true; vim.bo.readonly=false',
+	} }), []);
+});
+
+test("runtime loaded after VimEnter starts immediately without another scheduled tick", { skip: !hasNeovim }, async () => {
+	assert.deepEqual(await neovimReview(reply, `
+assert(vim.v.vim_did_enter == 1)
+local review=require('pi_review')
+local starts=0
+package.loaded.pi_review={start=function(path)
+  assert(path == vim.env.PI_REVIEW_MANIFEST)
+  starts=starts+1
+end}
+dofile(vim.env.PI_REVIEW_RUNTIME .. '/nvim/init.lua')
+assert(starts == 1, 'Review startup was deferred')
+package.loaded.pi_review=review
+review.submit()
+`), []);
+});
+
 test("a user's disabled ftplugins/syntax stay disabled; no Tree-sitter parser is imposed", { skip: !hasNeovim }, async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-review-no-parser-"));
 	try {

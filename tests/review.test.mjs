@@ -56,7 +56,7 @@ test("interactive, idle and queued-message guards reject before launching an edi
 		const h = harness(); await h.run("help"); await h.run("invalid args"); assert.equal(h.lifecycle.length, 0);
 	});
 });
-test("small reviews go directly to chat as one Markdown message with the selected original reply", async () => {
+test("small reviews go directly to chat as one Markdown message with the commented reply excerpt", async () => {
 	await withEditor(async () => {
 		const h = harness({ messages: [assistant("older answer"), assistant("latest answer")] });
 		await h.run("1");
@@ -66,13 +66,26 @@ test("small reviews go directly to chat as one Markdown message with the selecte
 		assert.deepEqual(h.lifecycle, ["stop", "start", "render"]);
 	});
 });
-test("inclusive reply ranges preserve numbering and chronological order across context loss", async () => {
+test("inclusive reply ranges export only commented replies with their original indexes", async () => {
 	await withEditor(async () => {
 		const h = harness({ messages: [assistant("old"), assistant("middle"), assistant("latest")] });
 		await h.run("message 0-2"); const prompt = h.sent[0].prompt;
-		assert.ok(prompt.indexOf("### AI reply 2") < prompt.indexOf("### AI reply 1"));
-		assert.ok(prompt.indexOf("### AI reply 1") < prompt.indexOf("### AI reply 0"));
-		assert.match(prompt, /old\n```/); assert.match(prompt, /latest\n```/);
+		assert.match(prompt, /### AI reply 2 — lines 1/);
+		assert.match(prompt, /1: old\n```/);
+		assert.doesNotMatch(prompt, /AI reply [01]|middle|latest|Selected AI replies/);
+	});
+});
+test("long replies with small comments stay inline and omit text away from the comment", async () => {
+	await withEditor(async () => {
+		const original = "Commented line\nNearby context\nMore nearby context\n" + "Unrelated distant text\n".repeat(1000);
+		for (const onEditor of [undefined, state => state.session = "new"]) {
+			const h = harness({ messages: [assistant(original)], onEditor }); await h.run("");
+			const prompt = h.sent[0]?.prompt ?? h.drafts[0];
+			assert.match(prompt, /1: Commented line\n2: Nearby context\n3: More nearby context/);
+			assert.match(prompt, /Please improve this/);
+			assert.doesNotMatch(prompt, /Unrelated distant text|Selected AI replies|review\.md/);
+			assert.ok(Buffer.byteLength(prompt) < 16384);
+		}
 	});
 });
 test("missing replies and unavailable ranges never launch an editor or send partial reviews", async () => {
@@ -119,11 +132,17 @@ test("send failures keep the complete prompt as a draft", async () => {
 });
 test("large reviews and large changed-session drafts retain only review.md, not editor or source artifacts", async () => {
 	await withEditor(async () => {
+		process.env.PI_REVIEW_MOCK_TEXT = "Large comment\n" + "x".repeat(17000);
 		for (const onEditor of [undefined, state => state.session = "new"]) {
-			const h = harness({ messages: [assistant("Original context\n" + "x".repeat(17000))], onEditor }); await h.run("");
+			const h = harness({ messages: [assistant("Reply excerpt")], onEditor }); await h.run("");
 			const prompt = h.sent[0]?.prompt ?? h.drafts[0]; const path = JSON.parse(/in (".*") and address/.exec(prompt)[1]);
-			try { assert.deepEqual(readdirSync(dirname(path)), ["review.md"]); assert.match(readFileSync(path, "utf8"), /Original context/); }
-			finally { rmSync(dirname(path), { recursive: true, force: true }); }
+			try {
+				assert.deepEqual(readdirSync(dirname(path)), ["review.md"]);
+				const markdown = readFileSync(path, "utf8");
+				assert.match(markdown, /1: Reply excerpt/);
+				assert.ok(markdown.includes(process.env.PI_REVIEW_MOCK_TEXT));
+				assert.doesNotMatch(markdown, /Selected AI replies/);
+			} finally { rmSync(dirname(path), { recursive: true, force: true }); }
 		}
 	});
 });
