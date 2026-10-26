@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assistantText, assistantTextRange, newComments, replyRangeDocument, reviewDocument, reviewFilePrompt, reviewPrompt } from "../core.ts";
+import { assistantText, assistantTextRange, reviewMarkdown } from "../core.ts";
 import { parseReviewTarget, REVIEW_USAGE } from "../git.ts";
 
 const assistant = text => ({ role: "assistant", content: [{ type: "text", text }] });
@@ -51,24 +51,13 @@ test("unavailable ranges report the actual available interval without partial re
 	}
 });
 
-test("collection sections preserve indexes, XML/code/CDATA text and one trailing blank line", () => {
-	const text = 'Code </reply> & <tag> ]]> #REPLY: existing \u4e2d\u6587';
-	const collection = replyRangeDocument([{ index: 1, text }, { index: 0, text: "latest" }]);
-	assert.ok(collection.startsWith('<reply index="1"><![CDATA[\n'));
-	assert.ok(collection.endsWith('\nlatest\n]]></reply>'));
-	assert.ok(collection.includes(']]]]><![CDATA[>'));
-	const content = [...collection.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)].map(match => match[1]).join("");
-	assert.equal(content, "\n" + text + "\n\nlatest\n");
-	assert.deepEqual(newComments(collection, reviewDocument(collection)), []);
-	assert.equal(newComments(collection, collection + "\n#REPLY: New comment\n").length, 1);
-	assert.ok(reviewDocument(collection).endsWith("</reply>\n\n"));
-});
-
-test("inline and file collection prompts identify numbered replies and chronological ordering", () => {
-	for (const prompt of [reviewPrompt("collection", "AI responses 0-10", "replies"),
-		reviewFilePrompt("/tmp/review.md", "/tmp/comments.json", "AI responses 0-10", "replies")]) {
-		assert.ok(prompt.includes('<replies subject="AI responses 0-10">'));
-		assert.match(prompt, /numbered <reply> blocks, ordered oldest to newest/);
-		assert.ok(prompt.endsWith("</replies>"));
-	}
+test("exports retain full numbered original replies, without rewriting historical markers", () => {
+	const text = 'Code ``` </reply> & <tag> ]]> #REPLY: existing 中文';
+	const sources = [{ id: 0, reply: 1, label: "old", content: text }, { id: 1, reply: 0, label: "new", content: "latest" }];
+	const markdown = reviewMarkdown({ title: "Replies", sources }, [{ source: 1, line: 1, endLine: 1, context: "1: latest", text: "New comment" }]);
+	assert.ok(markdown.includes(text));
+	assert.ok(markdown.indexOf("### AI reply 1") < markdown.indexOf("### AI reply 0"));
+	assert.match(markdown, /AI reply 0 — lines 1/);
+	assert.match(markdown, /oldest first/);
+	assert.match(markdown, /#REPLY:\n```\nNew comment/);
 });

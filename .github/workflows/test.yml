@@ -17,4 +17,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          version: v0.10.4
+          neovim: true
+      - name: Install pinned Diffview
+        run: node --input-type=module -e 'import { installDiffview } from "./diffview.ts"; await installDiffview();'
       - run: npm test
+        env:
+          PI_REVIEW_REQUIRE_NVIM: "1"

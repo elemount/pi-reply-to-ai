@@ -1,120 +1,71 @@
-import { spawn } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { reviewDocument, reviewVimScript } from "./core.ts";
+import { MAX_REVIEW_BYTES, validateComments, type ReviewComment, type ReviewDocument } from "./core.ts";
+import { cleanGitEnv } from "./file-workspace.ts";
 import { editorCandidates, environmentValue, isWsl } from "./platform.ts";
 
+const runtime = dirname(fileURLToPath(import.meta.url));
+const execute = promisify(execFile);
 function executable(candidate: string): boolean {
 	try {
-		if (process.platform === "win32") {
-			// Use console executables directly, not batch files or Git Bash's MSYS Vim.
-			if (!/\.(exe|com)$/i.test(candidate) || existsSync(join(dirname(candidate), "msys-2.0.dll"))) return false;
-		}
+		if (process.platform === "win32" && (!/\.(exe|com)$/i.test(candidate) || existsSync(join(dirname(candidate), "msys-2.0.dll")))) return false;
 		if (!statSync(candidate).isFile()) return false;
-		accessSync(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-		return true;
+		accessSync(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK); return true;
 	} catch { return false; }
 }
-
-function windowsVimCandidates(): string[] {
-	const env = process.env;
-	const roots = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
-		.map(name => environmentValue(env, name)).filter((root): root is string => Boolean(root)).map(root => join(root, "Vim"));
-	if (env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, "Programs", "Vim"));
-	if (env.SystemDrive) roots.push(join(env.SystemDrive + "\\", "tools", "vim"));
-	const scoop = env.SCOOP || (env.USERPROFILE && join(env.USERPROFILE, "scoop"));
-	if (scoop) roots.push(join(scoop, "apps", "vim", "current"));
-	return [...new Set(roots)].flatMap(root => {
-		let versions: string[] = [];
-		try { versions = readdirSync(root).filter(name => /^vim[\d.]+$/i.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); }
-		catch { /* Not installed in this location. */ }
-		return [join(root, "vim.exe"), ...versions.map(version => join(root, version, "vim.exe"))];
-	});
-}
-
-export function findReviewEditor(cwd: string): string {
+export async function findReviewEditor(cwd: string): Promise<string> {
 	const configured = environmentValue(process.env, "PI_REVIEW_EDITOR")?.replace(/^(["'])(.*)\1$/, "$2");
-	if (isWsl() && configured && /\.(exe|cmd|bat)$/i.test(configured)) {
-		throw new Error("Use Linux vim inside WSL, not a Windows executable. Install it in WSL or set PI_REVIEW_EDITOR=/usr/bin/vim.");
-	}
-	const candidates = editorCandidates(configured || "vim", cwd);
-	if (!configured && process.platform === "win32") candidates.push(...windowsVimCandidates());
-	const found = candidates.find(executable);
-	if (found) return found;
-	throw new Error(configured
-		? `Cannot find a usable PI_REVIEW_EDITOR=${configured} (expected a native console vim executable path, without arguments or batch wrappers).`
-		: "Cannot find vim. Install console Vim or set PI_REVIEW_EDITOR to its executable path (vim.exe on Windows).");
+	if (isWsl() && configured && /\.(exe|cmd|bat)$/i.test(configured)) throw new Error("Use Linux Neovim inside WSL, not a Windows executable.");
+	const candidates = editorCandidates(configured || "nvim", cwd);
+	if (!configured && process.platform === "win32" && process.env.ProgramFiles) candidates.push(join(process.env.ProgramFiles, "Neovim", "bin", "nvim.exe"));
+	const editor = candidates.find(executable);
+	if (!editor) throw new Error("Cannot find Neovim. Install Neovim >= 0.10 or set PI_REVIEW_EDITOR to its native executable path, without arguments.");
+	const { stdout } = await execute(editor, ["--version"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+	const version = /^NVIM v(\d+)\.(\d+)/m.exec(stdout);
+	if (!version || (Number(version[1]) === 0 && Number(version[2]) < 10)) throw new Error("/re requires Neovim >= 0.10. Vim is not supported.");
+	return editor;
 }
+export type LaunchEditor = (editor: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<void>;
+export const launchEditor: LaunchEditor = (editor, args, cwd, env) => new Promise((resolve, reject) => {
+	const child = spawn(editor, args, { cwd, env, stdio: "inherit", shell: false });
+	child.once("error", reject);
+	child.once("close", (code, signal) => code === 0 ? resolve() : reject(new Error(`Neovim exited abnormally (${signal ?? code ?? "unknown"}); no review sent.`)));
+});
+export interface ReviewView { directory: string; left: string; right: string; paths: string[]; runtime: string }
 
-export function launchEditor(editor: string, args: string[], cwd: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(editor, args, { cwd, stdio: "inherit", shell: false });
-		child.once("error", reject);
-		child.once("close", (code, signal) => {
-			if (code === 0) resolve();
-			else reject(new Error(`Vim exited abnormally (${signal ?? code ?? "unknown"}); no review sent.`));
-		});
-	});
-}
-
-export interface SavedReview {
-	content: string;
-	filePath: string;
-	/** Caller owns cleanup; retain the directory if the model receives a file reference. */
-	cleanup(): void;
-}
-
-function remove(path: string): void {
-	try { rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
-	catch { /* Best-effort cleanup. */ }
-}
-
-/** undefined means no successful write. Return the last saved snapshot, not unsaved edits. */
-export async function editReview(original: string, ctx: ExtensionContext, options: { patch?: boolean; extension?: string } = {}): Promise<SavedReview | undefined> {
-	const editor = findReviewEditor(ctx.cwd);
-	const directory = mkdtempSync(join(tmpdir(), "pi-review-"));
-	const extension = options.patch ? ".diff" : options.extension === undefined ? ".md"
-		: /^\.[a-zA-Z0-9_-]{1,16}$/.test(options.extension) ? options.extension : ".txt";
-	const filePath = join(directory, `editing${extension}`);
-	const scriptPath = join(directory, "review.vim");
-	const savedPath = join(directory, `review${extension}`);
-	let handedOff = false;
+/** Successful editor exits deliver explicit saved comments; cancellation removes the private result. */
+export async function editReview(document: ReviewDocument, ctx: ExtensionContext, options: { tree?: boolean; view?: ReviewView } = {}, launch: LaunchEditor = launchEditor): Promise<ReviewComment[] | undefined> {
+	const editor = await findReviewEditor(ctx.cwd);
+	const directory = await mkdtemp(join(tmpdir(), "pi-review-editor-"));
 	try {
-		writeFileSync(filePath, reviewDocument(original), { mode: 0o600 });
-		writeFileSync(scriptPath, reviewVimScript(savedPath, options.patch ? "diff" : options.extension !== undefined ? "auto" : "markdown"), { mode: 0o600 });
+		const resultPath = join(directory, "result.json"), manifestPath = join(directory, "manifest.json");
+		await writeFile(manifestPath, JSON.stringify({ ...document, ...options, cwd: ctx.cwd, node: process.execPath,
+			reader: join(runtime, "source-reader.ts"), result: resultPath }), { mode: 0o600 });
+		const env: NodeJS.ProcessEnv = { ...cleanGitEnv(), PI_REVIEW_RUNTIME: runtime, PI_REVIEW_MANIFEST: manifestPath };
+		if (options.view) {
+			// Diffview uses private metadata only. Do not inherit external diff/textconv
+			// drivers, attributes, or config injection from the surrounding Git session.
+			Object.assign(env, { GIT_CONFIG_GLOBAL: join(directory, "no-global-gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" });
+			delete env.GIT_CONFIG_PARAMETERS; delete env.GIT_EXTERNAL_DIFF;
+		}
 		const failure = await ctx.ui.custom<Error | undefined>(async (tui, _theme, _keys, done) => {
-			let error: Error | undefined;
+			let failure: Error | undefined;
 			tui.stop();
-			try {
-				// Async spawn releases terminal input correctly, including on Windows.
-				// Disable modelines BEFORE reading model-generated text; keep the user's vimrc.
-				await launchEditor(editor, [
-					"-n", "-i", "NONE",
-					"--cmd", "set encoding=utf-8",
-					"--cmd", "autocmd BufReadPre * setlocal nomodeline",
-					"-S", scriptPath, "--", filePath,
-				], ctx.cwd);
-			} catch (cause) {
-				error = cause instanceof Error ? cause : new Error(String(cause));
-			} finally {
-				tui.start();
-				tui.requestRender(true);
-			}
-			done(error);
-			return { render: () => [], invalidate: () => {} };
+			try { await launch(editor, ["-c", "lua dofile(vim.env.PI_REVIEW_RUNTIME .. '/nvim/init.lua')"], ctx.cwd, env); }
+			catch (error) { failure = error instanceof Error ? error : new Error(String(error)); }
+			finally { tui.start(); tui.requestRender(true); }
+			done(failure); return { render: () => [], invalidate: () => {} };
 		});
 		if (failure) throw failure;
-		if (!existsSync(savedPath)) return undefined;
-		const content = readFileSync(savedPath, "utf8").replace(/^\uFEFF/, "");
-		if (process.platform !== "win32") chmodSync(savedPath, 0o600);
-		handedOff = true;
-		return { content, filePath: savedPath, cleanup: () => remove(directory) };
-	} finally {
-		if (handedOff) {
-			remove(filePath);
-			remove(scriptPath);
-		} else remove(directory);
-	}
+		let info;
+		try { info = await lstat(resultPath); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+		if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_REVIEW_BYTES) throw new Error("Invalid or oversized Neovim review result.");
+		return validateComments(JSON.parse(await readFile(resultPath, "utf8")), document.sources);
+	} finally { await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }

@@ -1,229 +1,131 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { gitReview, parseReviewTarget, REVIEW_USAGE } from "../git.ts";
-import { newComments, reviewDocument, reviewFilePrompt, reviewPrompt, reviewVimScript } from "../core.ts";
+import { git, gitComparison, parseReviewTarget, REVIEW_USAGE } from "../git.ts";
+import { createGitWorkspace } from "../git-workspace.ts";
 import { withRepository } from "./fixtures/repository.mjs";
 
-test("parse default message, single commit, PR base, and working diff", () => {
-	assert.deepEqual(parseReviewTarget(""), { kind: "message", offset: 0 });
-	assert.deepEqual(parseReviewTarget("message"), { kind: "message", offset: 0 });
-	assert.deepEqual(parseReviewTarget("0"), { kind: "message", offset: 0 });
-	assert.deepEqual(parseReviewTarget("1"), { kind: "message", offset: 1 });
-	assert.deepEqual(parseReviewTarget("message 2"), { kind: "message", offset: 2 });
-	assert.deepEqual(parseReviewTarget("001"), { kind: "message", offset: 1 });
-	assert.deepEqual(parseReviewTarget("commit"), { kind: "commit", revision: "HEAD" });
-	assert.deepEqual(parseReviewTarget(" commit  HEAD~1 "), { kind: "commit", revision: "HEAD~1" });
-	assert.deepEqual(parseReviewTarget("pr"), { kind: "pr", base: undefined });
-	assert.deepEqual(parseReviewTarget("pr origin/main"), { kind: "pr", base: "origin/main" });
-	assert.deepEqual(parseReviewTarget("diff"), { kind: "diff" });
-	assert.deepEqual(parseReviewTarget("c"), parseReviewTarget("commit"));
-	assert.deepEqual(parseReviewTarget("c HEAD~1"), parseReviewTarget("commit HEAD~1"));
-	assert.deepEqual(parseReviewTarget("p"), parseReviewTarget("pr"));
-	assert.deepEqual(parseReviewTarget("p origin/main"), parseReviewTarget("pr origin/main"));
-	assert.deepEqual(parseReviewTarget("d"), parseReviewTarget("diff"));
-	for (const input of ["unknown", "message extra", "diff HEAD", "commit a b", "pr a b", "d HEAD", "p a b", "c a b", "-1", "1.5", "1e2", "Infinity", "9007199254740992", "message -1", "1 extra"]) {
+const diff = comparison => git(comparison.root, ["diff", "--no-ext-diff", "--no-textconv", comparison.left, ...(comparison.right ? [comparison.right] : []), "--"]);
+const snapshotDiff = workspace => git(workspace.directory, ["diff", workspace.left, workspace.right, "--"]);
+
+test("all existing target commands and short aliases retain their parsing", () => {
+	for (const [input, target] of [["", { kind: "message", offset: 0 }], ["message 2", { kind: "message", offset: 2 }],
+		["001", { kind: "message", offset: 1 }], ["commit", { kind: "commit", revision: "HEAD" }],
+		["c HEAD~1", { kind: "commit", revision: "HEAD~1" }], ["p", { kind: "pr", base: undefined }],
+		["pr origin/main", { kind: "pr", base: "origin/main" }], ["d", { kind: "diff" }]]) assert.deepEqual(parseReviewTarget(input), target);
+	for (const input of ["unknown", "message extra", "diff HEAD", "c a b", "p a b", "-1", "1.5", "1e2", "9007199254740992", "1 extra"]) {
 		assert.throws(() => parseReviewTarget(input), error => error.message === REVIEW_USAGE);
 	}
 });
-
-test("root commit is compared with the empty tree and existing hunk markers are not comments", async () => {
+test("root commit uses a private empty base; source objects and index remain unchanged", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("root.txt", "root\n"); const head = commit();
+		const objects = readdirSync(join(cwd, ".git", "objects"));
+		const comparison = await gitComparison(cwd, { kind: "commit", revision: "HEAD" });
+		assert.equal(comparison.head, head); assert.match(comparison.provenance.join("\n"), /root commit/);
+		const workspace = await createGitWorkspace(comparison);
+		try {
+			assert.equal(workspace.sources.length, 1); assert.equal(workspace.sources[0].side, "new");
+			assert.match(await snapshotDiff(workspace), /\+root/);
+			assert.equal(existsSync(join(workspace.directory, "root.txt")), false);
+			assert.deepEqual(readdirSync(join(cwd, ".git", "objects")), objects);
+			assert.equal(run("status", "--porcelain"), "");
+		} finally { await workspace.cleanup(); }
+	});
+});
+test("commit reviews ignore other commits and dirty files; revisions are option-safe", async () => {
 	await withRepository(async ({ cwd, write, commit }) => {
-		write("root.txt", "root contents\n");
-		const hash = commit("root");
-		const patch = await gitReview(cwd, { kind: "commit", revision: "HEAD" });
-		assert.ok(patch.includes(hash));
-		assert.match(patch, /Parent: \(root commit\)/);
-		assert.match(patch, /diff --git a\/root.txt b\/root.txt/);
-		assert.match(patch, /\+root contents/);
-		assert.deepEqual(newComments(patch, reviewDocument(patch)), []);
-		assert.deepEqual(newComments("", patch), []);
-		assert.deepEqual(newComments(patch, patch + "\n#REPLY: Add a test\n"), [
-			{ line: patch.split("\n").length + 1, text: "Add a test" },
-		]);
+		write("one", "one\n"); commit(); write("two", "two\n"); const second = commit();
+		write("three", "three\n"); commit(); write("three", "dirty\n");
+		const comparison = await gitComparison(cwd, { kind: "commit", revision: "HEAD~1" });
+		assert.equal(comparison.right, second); assert.match(await diff(comparison), /\+two/); assert.doesNotMatch(await diff(comparison), /three|dirty/);
+		for (const revision of ["--help", "missing"]) await assert.rejects(gitComparison(cwd, { kind: "commit", revision }));
 	});
 });
-
-test("latest commit excludes other commits and local dirty changes; explicit revision works", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("first.txt", "first\n"); commit("first");
-		write("second.txt", "second\n"); const second = commit("second");
-		write("third.txt", "third\n"); const third = commit("third");
-		write("third.txt", "dirty\n");
-		const status = git("status", "--porcelain");
-		const latest = await gitReview(cwd, parseReviewTarget("commit"));
-		assert.ok(latest.includes(third));
-		assert.match(latest, /\+third/);
-		assert.doesNotMatch(latest, /second.txt|\+dirty/);
-		const previous = await gitReview(cwd, parseReviewTarget("commit HEAD~1"));
-		assert.ok(previous.includes(second));
-		assert.match(previous, /\+second/);
-		assert.doesNotMatch(previous, /third.txt/);
-		assert.equal(git("status", "--porcelain"), status);
+test("merge commits compare against their first parent", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("root", "root\n"); commit(); run("checkout", "-qb", "feature"); write("feature", "feature\n"); commit();
+		run("checkout", "-q", "main"); write("main-only", "main\n"); const parent = commit();
+		run("merge", "--quiet", "--no-ff", "feature", "-m", "merge");
+		const comparison = await gitComparison(cwd, { kind: "commit", revision: "HEAD" });
+		assert.equal(comparison.left, parent); assert.match(await diff(comparison), /\+feature/); assert.doesNotMatch(await diff(comparison), /main-only/);
 	});
 });
-
-test("merge commit is compared with its first parent", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("root.txt", "root\n"); commit();
-		git("checkout", "--quiet", "-b", "feature");
-		write("feature.txt", "feature\n"); commit();
-		git("checkout", "--quiet", "main");
-		write("main-only.txt", "base update\n"); const parent = commit();
-		git("merge", "--quiet", "--no-ff", "feature", "-m", "merge feature");
-		const patch = await gitReview(cwd, parseReviewTarget("commit"));
-		assert.ok(patch.includes(`# Parent: ${parent}`));
-		assert.match(patch, /\+feature/);
-		assert.doesNotMatch(patch, /main-only.txt/);
+test("PR reviews compare fixed merge base through HEAD and include the full repository", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("nested/root", "root\n"); const base = commit(); run("checkout", "-qb", "feature");
+		write("one", "one\n"); commit(); write("two", "two\n"); const head = commit();
+		run("checkout", "-q", "main"); write("unrelated", "base\n"); commit(); run("checkout", "-q", "feature");
+		const comparison = await gitComparison(join(cwd, "nested"), { kind: "pr", base: "main" });
+		assert.equal(comparison.left, base); assert.equal(comparison.right, head);
+		assert.match(await diff(comparison), /\+one/); assert.match(await diff(comparison), /\+two/); assert.doesNotMatch(await diff(comparison), /unrelated/);
 	});
 });
-
-test("PR includes all feature commits since divergence, not unrelated base-branch updates", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("root.txt", "root\n"); const mergeBase = commit();
-		git("checkout", "--quiet", "-b", "feature");
-		write("one.txt", "feature one\n"); commit();
-		write("two.txt", "feature two\n"); commit();
-		git("checkout", "--quiet", "main");
-		write("main-only.txt", "unrelated base update\n"); commit();
-		git("checkout", "--quiet", "feature");
-		write("dirty.txt", "not committed\n");
-		const patch = await gitReview(cwd, parseReviewTarget("pr main"));
-		assert.ok(patch.includes(`# Merge base: ${mergeBase}`));
-		assert.match(patch, /\+feature one/);
-		assert.match(patch, /\+feature two/);
-		assert.doesNotMatch(patch, /main-only.txt|dirty.txt/);
-		const automatic = await gitReview(cwd, parseReviewTarget("pr"));
-		assert.match(automatic, /# Base: refs\/heads\/main/);
-		assert.match(automatic, /\+feature one/);
+test("working reviews freeze staged plus unstaged content without touching the source index or object store", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("tracked", "base\n"); write("deleted", "delete me\n"); commit();
+		write("tracked", "staged\n"); run("add", "tracked"); write("tracked", "unstaged\n");
+		write("added", "staged addition\n"); run("add", "added"); write("untracked", "untracked\n"); unlinkSync(join(cwd, "deleted"));
+		const status = run("status", "--porcelain"), index = readFileSync(join(cwd, ".git", "index"));
+		const objects = run("count-objects", "-v");
+		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: "diff" }));
+		try {
+			const patch = await snapshotDiff(workspace);
+			assert.match(patch, /-base\n\+unstaged/); assert.match(patch, /\+staged addition/); assert.match(patch, /-delete me/);
+			assert.doesNotMatch(patch, /\+staged\n|untracked/);
+			write("tracked", "changed while reviewing\n");
+			assert.equal(await snapshotDiff(workspace), patch);
+			write("tracked", "unstaged\n");
+			assert.equal(run("status", "--porcelain"), status); assert.deepEqual(readFileSync(join(cwd, ".git", "index")), index);
+			assert.equal(run("count-objects", "-v"), objects);
+			assert.match(workspace.provenance.join("\n"), /not a durable Git revision/);
+			assert.equal(workspace.sources.find(source => source.side === "new" && source.gitPath === "tracked").revision, "working tree snapshot");
+		} finally { await workspace.cleanup(); await workspace.cleanup(); }
 	});
 });
-
-test("PR prefers the remote default branch even if its name is not main/master", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("root.txt", "root\n"); const base = commit();
-		git("update-ref", "refs/remotes/origin/trunk", base);
-		git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk");
-		git("checkout", "--quiet", "-b", "feature");
-		write("feature.txt", "feature\n"); commit();
-		const patch = await gitReview(cwd, parseReviewTarget("pr"));
-		assert.match(patch, /# Base: refs\/remotes\/origin\/trunk/);
+test("staged deletion excludes an untracked file recreated at the same path", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("file", "old\n"); commit(); run("rm", "-q", "file"); write("file", "new untracked content\n");
+		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: "diff" }));
+		try { assert.equal(workspace.sources.length, 1); assert.equal(workspace.sources[0].side, "old"); assert.doesNotMatch(await snapshotDiff(workspace), /new untracked/); }
+		finally { await workspace.cleanup(); }
 	});
 });
-
-test("working diff combines staged and unstaged changes against HEAD, excluding untracked files", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("tracked.txt", "base\n"); commit();
-		write("tracked.txt", "staged\n"); git("add", "tracked.txt");
-		write("tracked.txt", "unstaged\n");
-		write("added.txt", "staged addition\n"); git("add", "added.txt");
-		write("untracked.txt", "untracked\n");
-		const status = git("status", "--porcelain");
-		const patch = await gitReview(cwd, parseReviewTarget("diff"));
-		assert.match(patch, /-base\n\+unstaged/);
-		assert.match(patch, /\+staged addition/);
-		assert.doesNotMatch(patch, /\+staged\n|a\/untracked.txt/);
-		assert.equal(git("status", "--porcelain"), status);
+test("renames and unusual paths are represented as safe old/new sources", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("old name,quote'.txt", "old\n"); commit(); run("mv", "old name,quote'.txt", "new [name],quote'.txt"); commit();
+		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: "commit", revision: "HEAD" }));
+		try { assert.equal(workspace.sources.length, 2); assert.ok(workspace.sources.some(source => source.side === "old" && source.gitPath.startsWith("old"))); }
+		finally { await workspace.cleanup(); }
 	});
 });
-
-test("Git reviews work from a subdirectory and include the whole repository", async () => {
+test("binary, invalid UTF-8, credential and symlink changes never enter the Git view allowlist", async () => {
 	await withRepository(async ({ cwd, write, commit }) => {
-		write("nested/one.txt", "nested\n"); write("outside.txt", "outside\n"); commit();
-		const patch = await gitReview(join(cwd, "nested"), parseReviewTarget("commit"));
-		assert.match(patch, /a\/nested\/one.txt/);
-		assert.match(patch, /a\/outside.txt/);
+		write("normal.txt", "old\n"); commit(); write("normal.txt", "new\n");
+		write("binary.dat", Buffer.from([0, 1])); write("invalid.dat", Buffer.from([0xff])); write(".env", "secret\n");
+		symlinkSync("normal.txt", join(cwd, "link.txt")); commit();
+		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: "commit", revision: "HEAD" }));
+		try { assert.deepEqual(workspace.paths, ["normal.txt"]); assert.match(workspace.provenance.join("\n"), /Skipped 4/); }
+		finally { await workspace.cleanup(); }
 	});
 });
-
-test("empty patches return nothing; missing repo/base/commit produce errors", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("root.txt", "root\n"); commit();
-		assert.equal(await gitReview(cwd, parseReviewTarget("diff")), undefined);
-		assert.equal(await gitReview(cwd, parseReviewTarget("pr main")), undefined);
-		git("commit", "--quiet", "--allow-empty", "-m", "empty");
-		assert.equal(await gitReview(cwd, parseReviewTarget("commit")), undefined);
-		await assert.rejects(gitReview(cwd, parseReviewTarget("commit nonexistent")));
-		await assert.rejects(gitReview(cwd, parseReviewTarget("commit --help")));
-		git("checkout", "--quiet", "-b", "feature"); git("branch", "-D", "main");
-		await assert.rejects(gitReview(cwd, parseReviewTarget("pr")), /Specify it explicitly/);
-	});
-	const directory = mkdtempSync(join(tmpdir(), "pi-review-not-git-"));
-	try {
-		await assert.rejects(gitReview(directory, parseReviewTarget("commit")), /not a git repository/);
-	} finally { rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("external diff and textconv programs are never executed", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("example.txt", "old\n"); commit();
-		write("example.txt", "new\n");
-		write(".gitattributes", "*.txt diff=reviewtest\n");
+test("external diff and textconv programs cannot run during selection or private browsing preparation", async () => {
+	await withRepository(async ({ cwd, write, commit, git: run }) => {
+		write("example.txt", "old\n"); commit(); write("example.txt", "new\n"); write(".gitattributes", "*.txt diff=reviewtest\n");
 		const marker = join(cwd, "external-ran");
-		git("config", "diff.reviewtest.command", `touch ${marker}`);
-		git("config", "diff.reviewtest.textconv", `touch ${marker}`);
-		git("config", "diff.external", `touch ${marker}`);
-		const patch = await gitReview(cwd, parseReviewTarget("diff"));
-		assert.match(patch, /\+new/);
-		assert.equal(existsSync(marker), false);
+		for (const key of ["diff.reviewtest.command", "diff.reviewtest.textconv", "diff.external"]) run("config", key, `touch ${marker}`);
+		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: "diff" }));
+		try { assert.match(await snapshotDiff(workspace), /\+new/); assert.equal(existsSync(marker), false); }
+		finally { await workspace.cleanup(); }
 	});
 });
-
-test("snapshot headers record reproducible commands, including merge-base lookup and quoted repo paths", async () => {
-	await withRepository(async ({ cwd, write, commit, git }) => {
-		write("root.txt", "root\n"); commit();
-		const root = await gitReview(cwd, parseReviewTarget("c"));
-		git("checkout", "--quiet", "-b", "feature");
-		write("feature.txt", "feature\n"); commit();
-		const single = await gitReview(cwd, parseReviewTarget("c"));
-		const pr = await gitReview(cwd, parseReviewTarget("p main"));
-		write("feature.txt", "working change\n");
-		const working = await gitReview(cwd, parseReviewTarget("d"));
-		const before = git("status", "--porcelain");
-		for (const snapshot of [root, single, pr, working]) {
-			const command = /^# Generated with: (.+)$/m.exec(snapshot)[1];
-			const actual = execFileSync("/bin/sh", ["-c", command], { cwd, encoding: "utf8" });
-			const expected = snapshot.slice(snapshot.indexOf("\ndiff --git ") + 1);
-			assert.equal(actual, expected);
-			assert.match(snapshot, /Reference snapshot only; implement review comments in the real repository files/);
-		}
-		const mergeCommand = /^# Merge-base command: (.+)$/m.exec(pr)[1];
-		assert.equal(execFileSync("/bin/sh", ["-c", mergeCommand], { cwd, encoding: "utf8" }).trim(), git("merge-base", "main", "HEAD"));
-		assert.match(root, /# Generated with: .* diff-tree --root /);
-		assert.match(single, /# Generated with: .* diff /);
-		assert.equal(git("status", "--porcelain"), before);
-	}, "repo 'quoted' & spaced");
-});
-
-test("inline and file-based patch prompts require editing real files rather than the snapshot", () => {
-	const prompts = [reviewPrompt("patch #REPLY: fix", "this Git patch", "patch"),
-		reviewFilePrompt("/tmp/review.diff", "/tmp/comments.json", "this Git patch", "patch")];
-	for (const prompt of prompts) {
-		assert.match(prompt, /read its header for the repository and generation command/);
-		assert.match(prompt, /inspect and edit the real repository files/);
-		assert.match(prompt, /Do not edit or apply the review snapshot/);
-	}
-	assert.doesNotMatch(reviewPrompt("reply #REPLY: fix"), /real repository files/);
-});
-
-test("review padding and prompts preserve significant trailing whitespace in patch lines", () => {
-	const patch = "diff --git a/file b/file\n@@ -1 +1 @@\n unchanged  \n";
-	assert.equal(reviewDocument(patch), patch + "\n");
-	assert.ok(reviewPrompt(patch, "this Git patch", "patch").includes("<![CDATA[\n" + patch + "]]></patch>"));
-});
-
-test("patch prompts identify Git patches in XML and retain the diff filetype without syntax colors", () => {
-	const inline = reviewPrompt("patch #REPLY: comment", "this Git patch", "patch");
-	assert.match(inline, /<patch subject="this Git patch"><!\[CDATA\[\npatch #REPLY: comment\n\]\]><\/patch>/);
-	assert.doesNotMatch(inline, /<review|<document/);
-	const filePrompt = reviewFilePrompt("/tmp/review.diff", "/tmp/comments.json", "this Git patch", "patch");
-	assert.match(filePrompt, /<patch subject="this Git patch">/);
-	assert.match(filePrompt, /<annotated_file>\/tmp\/review.diff<\/annotated_file>/);
-	assert.ok(filePrompt.endsWith("</patch>"));
-	const script = reviewVimScript("/tmp/review.diff", "diff");
-	assert.match(script, /filetype=diff/);
-	assert.match(script, /if &l:filetype ==# 'diff'\n  setlocal syntax=OFF\n  syntax clear/);
+test("empty comparisons return nothing and inherited Git directory/index variables cannot redirect review", async () => {
+	await withRepository(async ({ cwd, write, commit }) => {
+		write("root", "root\n"); commit();
+		const before = process.env.GIT_DIR;
+		try { process.env.GIT_DIR = "/does/not/exist"; assert.equal(await gitComparison(cwd, { kind: "diff" }), undefined); }
+		finally { if (before === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = before; }
+		assert.equal(await gitComparison(cwd, { kind: "pr", base: "main" }), undefined);
+	});
 });

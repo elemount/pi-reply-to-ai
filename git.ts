@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { quoteBlock } from "./core.ts";
+import { cleanGitEnv } from "./file-workspace.ts";
 import { commandShell, formatShellCommand } from "./platform.ts";
 
-export const REVIEW_USAGE = "Usage: /re [N | N-M | @file [@file ...] | @directory | message [N or N-M] | commit [revision] | pr [base] | diff] (aliases: c, p, d)";
+export const REVIEW_USAGE = "Usage: /re [N | N-M | @file [@file ...] | @directory | message [N or N-M] | commit [revision] | pr [base] | diff] (aliases: c, p, d); /re setup installs pinned Diffview";
 export type ReviewTarget =
 	| { kind: "message"; offset: number }
 	| { kind: "range"; start: number; end: number }
@@ -10,7 +11,8 @@ export type ReviewTarget =
 	| { kind: "files"; paths: string[] }
 	| { kind: "commit"; revision: string }
 	| { kind: "pr"; base?: string }
-	| { kind: "diff" };
+	| { kind: "diff" }
+	| { kind: "setup" };
 
 function messageTarget(value: string): ReviewTarget {
 	const range = /^(\d+)-(\d+)$/.exec(value);
@@ -58,27 +60,33 @@ export function parseReviewTarget(args: string): ReviewTarget {
 	if (kind === "commit" || kind === "c") return { kind: "commit", revision: ref ?? "HEAD" };
 	if (kind === "pr" || kind === "p") return { kind: "pr", base: ref };
 	if ((kind === "diff" || kind === "d") && !ref) return { kind: "diff" };
+	if (kind === "setup" && !ref) return { kind: "setup" };
 	throw new Error(REVIEW_USAGE);
 }
 
-const execute = promisify(execFile);
 const gitPrefix = ["--no-pager", "-c", "core.fsmonitor=false"];
-const diffOptions = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"];
+export const diffOptions = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-relative", "--no-renames"];
 
-async function git(cwd: string, args: string[], allowNoResult = false): Promise<string> {
+export async function git(cwd: string, args: string[], allowNoResult = false, input?: string | Buffer): Promise<string> {
 	try {
-		const result = await execute("git", [...gitPrefix, ...args], {
-			cwd, encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 * 1024,
-			env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+		return await new Promise<string>((resolve, reject) => {
+			const child = execFile("git", [...gitPrefix, ...args], {
+				cwd, encoding: "buffer", timeout: 30000, maxBuffer: 32 * 1024 * 1024, env: cleanGitEnv(),
+			}, (error, stdout) => {
+				if (error) { reject(error); return; }
+				try { resolve(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(stdout)); }
+				catch { reject(new Error("Git source is not valid UTF-8 text.")); }
+			});
+			child.stdin?.on("error", () => { /* The callback reports early process exits. */ });
+			child.stdin?.end(input);
 		});
-		return result.stdout;
 	} catch (cause) {
 		const error = cause as Error & { stderr?: string; code?: string | number };
 		// symbolic-ref/config/merge-base use exit 1 for an absent optional result.
 		if (allowNoResult && error.code === 1) return "";
 		if (error.code === "ENOENT") throw new Error("Cannot find git. Install it before reviewing patches.");
 		if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error("Git output exceeds the 32 MiB capture limit. Review a smaller target.");
-		throw new Error(error.stderr?.trim() || error.message);
+		throw new Error(error.stderr?.toString().trim() || error.message);
 	}
 }
 
@@ -149,44 +157,47 @@ async function prBase(cwd: string, head: string, explicit?: string): Promise<PrB
 	return { name: ref.name, commit: ref.commit, source: "Git history (inferred)" };
 }
 
-function gitCommand(cwd: string, args: string[]): string {
-	return formatShellCommand("git", ["-C", cwd, ...gitPrefix, ...args]);
+export type GitTarget = Extract<ReviewTarget, { kind: "commit" | "pr" | "diff" }>;
+export interface GitComparison {
+	root: string;
+	kind: GitTarget["kind"];
+	left: string;
+	right?: string;
+	head: string;
+	provenance: string[];
 }
 
-/** Generate a read-only snapshot of a Git patch; no checkout, fetch, or index changes. */
-export async function gitReview(cwd: string, target: Exclude<ReviewTarget, { kind: "message" | "range" | "file" | "files" }>): Promise<string | undefined> {
+/** Resolve fixed revisions offline. Never fetch, check out, or change the source index. */
+export async function gitComparison(cwd: string, target: GitTarget): Promise<GitComparison | undefined> {
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
-	const header = [`# Repository: ${JSON.stringify(root)}`, `# Command shell: ${commandShell()}`];
-	let patchArgs: string[];
+	// Older supported Git versions ignore GIT_NO_LAZY_FETCH. Refuse promisor
+	// repositories before walking objects rather than accidentally accessing a remote.
+	const partial = await git(root, ["config", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.promisor)$"], true);
+	if (partial.split("\n").filter(Boolean).some(line => /^extensions\.partialclone /i.test(line) || !/\s+(?:false|no|off|0)$/i.test(line))) {
+		throw new Error("Offline Git review requires a full local repository, not a partial/promisor clone.");
+	}
+	const provenance = [`Repository: ${JSON.stringify(root)}`];
+	let left: string, right: string | undefined, head: string;
 	if (target.kind === "commit") {
-		const commit = await resolveCommit(root, target.revision);
-		const [, parent] = (await git(root, ["rev-list", "--parents", "-n", "1", commit])).trim().split(/\s+/);
-		header.unshift(`# Git patch: commit ${commit}`);
-		header.push(`# Parent: ${parent ?? "(root commit)"}`);
-		// Merge commits are compared with their first parent; root commits with the empty tree.
-		patchArgs = parent
-			? ["diff", ...diffOptions, parent, commit, "--"]
-			: ["diff-tree", "--root", "--no-commit-id", "-r", "-p", ...diffOptions, commit, "--"];
+		head = right = await resolveCommit(root, target.revision);
+		const [, parent] = (await git(root, ["rev-list", "--parents", "-n", "1", head])).trim().split(/\s+/);
+		left = parent ?? (await git(root, ["hash-object", "-t", "tree", "--stdin"])).trim();
+		provenance.push(`Commit: ${head}`, `Parent: ${parent ?? "(root commit; empty tree)"}`);
 	} else {
-		const head = await resolveCommit(root, "HEAD");
+		head = await resolveCommit(root, "HEAD");
 		if (target.kind === "pr") {
-			const selected = await prBase(root, head, target.base);
-			const baseName = selected.name, base = selected.commit;
-			const mergeBaseArgs = ["merge-base", base, head];
-			const mergeBase = (await git(root, mergeBaseArgs)).trim();
-			header.unshift("# Git patch: PR changes");
-			header.push(`# Base: ${baseName} (${base})`, `# Base selection: ${selected.source}`, `# Merge base: ${mergeBase}`, `# Head: ${head}`,
-				`# Merge-base command: ${gitCommand(root, mergeBaseArgs)}`);
-			patchArgs = ["diff", ...diffOptions, mergeBase, head, "--"];
+			const base = await prBase(root, head, target.base);
+			left = (await git(root, ["merge-base", base.commit, head])).trim(); right = head;
+			provenance.push(`Base: ${base.name} (${base.commit})`, `Base selection: ${base.source}`, `Merge base: ${left}`, `Head: ${head}`);
 		} else {
-			header.unshift("# Git patch: working tree changes (staged + unstaged)");
-			header.push(`# Head: ${head}`, "# Untracked files are excluded.");
-			patchArgs = ["diff", ...diffOptions, head, "--"];
+			left = head;
+			provenance.push(`Head: ${head}`, "Working tree: staged + unstaged tracked changes; untracked files are excluded.",
+				"Working content is frozen for browsing. It is not a durable Git revision; use the quoted context and inspect current real files.");
 		}
 	}
-	const patch = await git(root, patchArgs);
-	if (!patch.trim()) return undefined;
-	header.push(`# Generated with: ${gitCommand(root, patchArgs)}`,
-		"# Reference snapshot only; implement review comments in the real repository files.");
-	return `${header.join("\n")}\n\n${patch}`;
+	const changed = await git(root, ["diff", ...diffOptions, "--name-only", "-z", left, ...(right ? [right] : []), "--"]);
+	if (!changed) return;
+	const args = ["-C", root, ...gitPrefix, "diff", ...diffOptions, left, ...(right ? [right] : []), "--"];
+	provenance.push(`${right ? "Comparison command" : "Inspect current changes (not the frozen snapshot)"} (${commandShell()}):`, quoteBlock(formatShellCommand("git", args)));
+	return { root, kind: target.kind, left, right, head, provenance };
 }

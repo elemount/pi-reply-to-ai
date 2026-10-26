@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gitReview } from "../git.ts";
+import { gitReview } from "./fixtures/comparison.mjs";
 import { withRepository } from "./fixtures/repository.mjs";
 
 async function stacked(fn) {

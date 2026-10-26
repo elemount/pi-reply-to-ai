@@ -6,7 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileReview, resolveReviewPath } from "../file.ts";
 import { parseReviewTarget, REVIEW_USAGE } from "../git.ts";
-import { reviewFilePrompt, reviewPrompt, reviewVimScript } from "../core.ts";
 
 async function withFiles(fn) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-review-file-"));
@@ -73,14 +72,4 @@ test("FIFO references are rejected without waiting for a writer", { timeout: 500
 		if (spawnSync("mkfifo", [fifo]).status !== 0) { t.skip("mkfifo unavailable"); return; }
 		await assert.rejects(fileReview(cwd, "pipe"), /regular text file/);
 	});
-});
-
-test("file prompts distinguish the original source from the annotated private copy", () => {
-	for (const prompt of [reviewPrompt("source #REPLY: comment", "this file", "file", '/tmp/source & "name".ts'),
-		reviewFilePrompt("/tmp/copy.ts", "/tmp/comments.json", "this file", "file", '/tmp/source & "name".ts')]) {
-		assert.ok(prompt.includes('<file subject="this file" source="/tmp/source &amp; &quot;name&quot;.ts">'));
-		assert.match(prompt, /inspect the original file/i);
-		assert.match(prompt, /edit that original file, not the review snapshot/);
-	}
-	assert.match(reviewVimScript("/tmp/copy.ts", "auto"), /filetype on\nfiletype detect/);
 });

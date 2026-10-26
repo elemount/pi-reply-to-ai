@@ -1,295 +1,200 @@
 # pi-reply-to-ai
 
-Annotate AI replies, private file copies, directories, or Git patches in **vim**. Save, then quit to send your comments back to the AI.
-
-Personal Pi extension by [elemount](https://github.com/elemount). Hosted in a public GitHub repository for direct installation; not published to npm or submitted to the Pi community/gallery. The package is marked `private` to prevent accidental npm publishing and does not use the gallery-discovery keyword.
+A personal [Pi](https://pi.dev) extension for reviewing AI replies, files,
+directories, and Git changes in **Neovim**. Browse read-only sources, attach
+comments to lines or ranges, then send one concise review back to the AI.
 
 ## Install
 
-Requires Pi, Git, and console Vim on macOS, Linux, native Windows, or inside WSL. No build step or runtime npm dependencies.
-
-```bash
+```sh
 pi install git:github.com/elemount/pi-reply-to-ai
 ```
 
-In an existing Pi session:
+Requirements: Node.js >= 22.19, **Neovim >= 0.10**, and Git >= 2.31.
+Set `PI_REVIEW_EDITOR` to a native Neovim executable path if `nvim` is not on PATH.
+Arguments, shell wrappers, and Vim are not supported. In WSL, install Linux Neovim
+inside WSL and use Linux paths (`/mnt/c/...` for Windows files).
 
-```text
-/reload
-/re
-```
+Reviews start Neovim normally with **your configuration, plugins, theme, and
+keymaps**, then load the review runtime. No `--clean`, replacement `init.lua`, or
+reset of global options. Filetype plugins, indentation, syntax and Tree-sitter
+follow your configuration. Only review-owned buffers get read-only/file-write
+protections. Existing Pi sessions need `/reload` after extension updates.
 
-Press **Ctrl+Alt+R** in Pi to review the latest AI reply immediately (the same as `/re` or `/re 0`). The shortcut shares the command's busy checks, editor, save/cancel behavior, and duplicate-launch guard. Your terminal must pass the key combination through to Pi.
+For Git reviews, run **`/re setup` once** to install Diffview at the tested commit
+`4516612fe98ff56ae0415a259ff6361a89419b0a`. This explicit setup downloads it into
+`$XDG_CACHE_HOME/pi-reply-to-ai` (normally `~/.cache/pi-reply-to-ai`); normal reviews
+never download or update anything. Alternatively set `PI_REVIEW_DIFFVIEW` to your
+own checkout at that exact commit. An already loaded Diffview is kept rather than
+replaced, and must also be pinned to this commit. Files, directories, and replies
+need no Diffview.
 
-The extension is named `pi-reply-to-ai`; its command remains `/re`. Keep using `/re` arguments to select earlier replies, files, and Git patches. It requires interactive terminal mode and an idle agent with no queued messages.
+## Commands
 
-If you previously copied this extension into `~/.pi/agent/extensions/reply-to-ai`, move that manual copy outside the `extensions` directory before reloading. Otherwise the manual and package-installed copies will both load.
-
-### Native Windows (PowerShell)
-
-Install Git and native console Vim if needed:
-
-```powershell
-winget install --id Git.Git --exact
-winget install --id Vim.Vim --exact
-pi install git:github.com/elemount/pi-reply-to-ai
-```
-
-Restart the terminal after installation so PATH changes take effect. The extension searches for `vim.exe` on PATH and in common Vim installation directories (Program Files, per-user Programs, Scoop, and Chocolatey's tools directory).
-
-If Vim is installed elsewhere, set its executable path before starting Pi; spaces in the path are supported:
-
-```powershell
-$env:PI_REVIEW_EDITOR = 'C:\Program Files\Vim\vim91\vim.exe' # Adjust the version directory.
-pi
-```
-
-Use **console `vim.exe`**, not GUI `gvim.exe` or Git Bash's MSYS Vim. Batch wrappers (`.cmd` / `.bat`) are not supported; the editor is launched directly without a shell. Git commands in patch headers and large-file search commands are formatted for PowerShell on native Windows.
-
-### WSL
-
-Run the Linux versions of **Node/Pi, Git, and Vim inside the same WSL distribution**. Do not point a WSL Pi installation at Windows `vim.exe`.
-
-```bash
-sudo apt update
-sudo apt install git vim
-pi install git:github.com/elemount/pi-reply-to-ai
-# Optional, if Vim is not found:
-export PI_REVIEW_EDITOR=/usr/bin/vim
-pi
-```
-
-Use Linux paths, including `/mnt/c/...` for files on a Windows drive. To translate a Windows path, run `wslpath -u 'C:\Users\you\project'` in the WSL shell and use the result in `/re @...`. Windows-style paths are not automatically converted.
-
-Ctrl+Alt+R remains the shortcut on both Windows and WSL. If the terminal or desktop intercepts it, forward the key combination to Pi or use `/re` directly. No Windows or WSL CI environment is installed by this repository.
-
-## Update or remove
-
-Update this extension, then run `/reload` in Pi:
-
-```bash
-pi update git:github.com/elemount/pi-reply-to-ai
-```
-
-Remove it:
-
-```bash
-pi remove git:github.com/elemount/pi-reply-to-ai
-```
-
-Run `/reload` after removal as well. `pi list` shows your configured packages.
-
-### Migrating from the old repository name
-
-The repository was renamed from `elemount/reply-to-ai` to `elemount/pi-reply-to-ai`. GitHub redirects the old URL, but Pi identifies Git packages by URL. Replace the old package declaration rather than keeping both:
-
-```bash
-pi remove git:github.com/elemount/reply-to-ai
-pi install git:github.com/elemount/pi-reply-to-ai
-```
-
-Run `/reload` afterward. The `/re` command, Ctrl+Alt+R shortcut, and review behavior are unchanged.
-
-## Local development
-
-```bash
-gh repo clone elemount/pi-reply-to-ai ~/repos/pi-reply-to-ai
-cd ~/repos/pi-reply-to-ai
-npm test
-pi --no-extensions -e ./index.ts
-```
-
-To persistently use a working clone instead of the Git-managed installation, remove the Git package first and run `pi install ~/repos/pi-reply-to-ai`. Do not install both copies at once. Pi supplies the host API, which is declared as an optional peer dependency rather than bundled. No `npm install` is needed to run the tests.
-
-## Targets
-
-| Command | Opens |
+| Command | Review |
 | --- | --- |
-| `/re`, `/re 0`, or `/re message` | Latest AI text reply (the default) |
-| `/re 1` | Previous AI text reply |
-| `/re N` or `/re message N` | AI text reply N positions back, with 0 = latest |
-| `/re 0-10` | Inclusive indexes 0 through 10: eleven replies, oldest first |
-| `/re 3-7` | Inclusive indexes 3 through 7: five replies, ordered 7 to 3 |
-| `/re message 0-9` | Equivalent range form; the ten most recent AI text replies |
-| `/re @src/main.ts` | A private copy of a file, leaving the original untouched while annotating |
-| `/re @"path with spaces.md"` | Same, using Pi's quoted file-reference format |
-| `/re @a.ts @b.ts` | One temporary file copy per Vim tab |
-| `/re @src/` | A read-only file tree; open files lazily into a review pane |
-| `/re commit` or `/re c` | Latest commit (`HEAD`), compared with its first parent |
-| `/re c HEAD~1` | Previous commit; any valid commit revision is accepted |
-| `/re pr` or `/re p` | All committed changes from the PR base's merge base to `HEAD` |
-| `/re p origin/main` | Same, with an explicit base branch or commit |
-| `/re diff` or `/re d` | Staged and unstaged changes together, compared with `HEAD` |
+| `/re` or `/re 0` | Latest AI text reply |
+| `/re 2` or `/re message 2` | Third newest AI text reply |
+| `/re 0-4` or `/re message 0-4` | Five replies, oldest first |
+| `/re @src/main.ts` | A file |
+| `/re @"file with spaces.ts" @README.md` | Multiple files |
+| `/re @src` | A directory, with a lazy file tree |
+| `/re c [revision]` | A commit versus its first parent (empty tree for a root commit) |
+| `/re p [base]` | PR changes: merge base through the captured HEAD |
+| `/re d` | Tracked working changes: HEAD through staged + unstaged content |
 | `/re help` | Usage |
+| `/re setup` | Explicit one-time Diffview installation (network required) |
 
-Message indexes count **AI text replies only**, newest first, in the active session context. User messages, tool results, and thinking/tool-only assistant messages do not count. Indexes must be nonnegative integers; unavailable indexes report a message rather than silently opening a different reply. Replies no longer present after compaction are unavailable.
+Long aliases: `commit`, `pr`, `diff`. **Ctrl+Alt+R** reviews the latest AI reply.
+Reply indexes count assistant text only, not user/tool/thinking-only messages;
+missing range indexes are errors rather than silently omitted replies. Home-relative,
+absolute, quoted, and literal paths are supported without shell expansion.
 
-### Reply ranges
+## In Neovim
 
-`/re N-M` selects an **inclusive** interval with `N <= M`. Since index 0 is the latest reply, `/re 0-10` includes **eleven** replies; use `/re 0-9` for the most recent ten. `/re message N-M` is also accepted.
+- **Enter** on a source line opens a small, ordinary **horizontal split
+  below that pane** to add or edit a comment. No floating window or inserted source lines.
+- **Visual selection + Enter**: comment on an inclusive line range.
+- In the comment split, **Ctrl+Enter** or **`:wq`** saves and closes; **`:w`** saves
+  without closing. **Enter** and **Esc** keep normal Vim behavior: newline in
+  Insert mode and return to Normal mode, without saving or closing the split.
+- **`:q!` / Ctrl+Q** discards unsaved edits, preserving any previously saved
+  version. Clear an existing comment and save to delete it.
+- **Normal Neovim exit** (e.g. **`:qa`**) sends all saved comments. **`:ReSubmit`**
+  explicitly finishes the same way; **`:ReCancel`** discards the entire review.
+  An abnormal editor exit sends nothing.
+- Files/replies are normal listed buffers: use your buffer picker, **`:bnext`** /
+  **`:bprevious`**, or **`:ls`**. There are no review-specific navigation keys.
+- For directories, **`:ReTree`** returns to the file tree; **Enter** expands a
+  folder or opens a file lazily. This is not a comment sidebar.
+- Git navigation, layout, file panel, and hooks follow your Diffview configuration.
+  Defaults include **Tab / Shift+Tab** for files and native **`]c` / `[c`** for
+  hunks; **`:DiffviewFocusFiles`** opens the file panel. Both sides accept comments.
+  Diff text and comment previews are uncolored without changing your global theme.
 
-The temporary file orders the selected replies **oldest to newest**, so `/re 0-10` displays indexes 10 down to 0. Each reply has its own `<reply index="N">` section with safely quoted text. Keep the index labels intact and add `#REPLY:` comments near the relevant text, then save and quit to submit the whole review once.
+Saved comments appear as virtual-line previews below read-only source lines; they
+never become part of the diff. Comment state survives file switches and buffer
+recreation. The comment split is not diff/scroll/cursor-bound to Diffview's panes.
+Only **Enter** in sources and **Ctrl+Enter / Ctrl+Q** in the comment split get
+review mappings. Inside the comment split, **Enter / Esc / Shift+Enter** keep
+native behavior. Global mappings, including **ZZ / ZQ**, are left alone. File
+trees and Diffview's file panel keep their own Enter navigation.
 
-The **16 KiB limit applies to the entire saved collection**, including section markup and comments, not to each reply separately. Large collections remain on disk and are referenced by a short prompt. Unavailable ranges report the available indexes instead of silently returning fewer replies. Invalid or reversed ranges are rejected before opening Vim. Ctrl+Alt+R still reviews only the latest reply.
+Saving a comment checkpoints the review privately; Pi sends it when Neovim exits
+successfully, not after every individual edit. Unsaved drafts are never included.
+Close/save the comment split before `:ReSubmit`. Other modified normal buffers
+must also be saved or discarded; submission does not force-quit them. A review
+with no saved comments sends nothing.
 
-The long Git command names remain valid; `c`, `p`, and `d` are aliases for `commit`, `pr`, and `diff`.
+Your terminal must send a distinct **Ctrl+Enter** key for that shortcut to work.
+No special keyboard protocol is needed for **`:ReComment`** to open a comment,
+**`:1,5ReComment`** (or a Visual selection followed by `:ReComment`) to select a
+range, and **`:wq`** to save and close.
 
-### PR base selection
+### What the AI receives
 
-`/re pr` and `/re p` select a base **offline**, in this order:
+Simple Markdown: source path, line/range, old/new side and fixed revision where
+applicable, a short numbered excerpt, and your comment. No full annotated file or
+diff copies, no thread database, and no public JSON schema. Selected AI replies
+are quoted in full, since conversation compaction can otherwise remove them.
+Fences safely quote Markdown tables, code fences, XML, and arbitrary comment text.
 
-1. An explicit argument, e.g. `/re pr origin/parent-feature`.
-2. The current branch's Git configuration: `branch.<name>.gh-merge-base`, then `branch.<name>.vscode-merge-base`.
-3. Git history: the nearest unambiguous shared ancestor among local and remote-tracking branch refs. This supports stacked branches even if their parent has advanced after the fork.
-4. The repository default: the local `origin/HEAD` reference, then `origin/main`, `origin/master`, `main`, and `master`.
+The **complete exported Markdown** is sent directly when it is at most
+**16 KiB (16,384 UTF-8 bytes)**. Only larger reviews retain a private `review.md`
+and send a reference. Temporary editor data and Git metadata are cleaned up;
+large retained review documents are deliberately left for the AI to read.
 
-History inference excludes the current branch, its own remote-tracking refs (including a renamed upstream), and refs already containing `HEAD`. Local bases that track an available remote ref use that remote snapshot; aliases at the same commit count once. Selection uses commit ancestry, not timestamps or the smallest commit count. If the known default gives the same merge base, its identity is retained. If `HEAD` is already in the default branch, the review stays empty rather than resurrecting changes from older feature refs.
+`#REPLY:` is only a label in the export. Literal `#REPLY:`, `@@`, or `??` in sources
+never creates a comment. Historical replies are preserved verbatim as quoted context.
 
-Multiple plausible parents or incomparable ancestry points require an explicit base instead of guessing. History inference also stops at more than 256 distinct candidate commits; a recorded or explicit base bypasses that scan. Detached HEAD falls back to the repository default unless a base is supplied explicitly. An unavailable configured base reports an error rather than silently changing the comparison.
+## Git base selection (offline)
 
-Git does not store a PR's intended target branch, so history is a heuristic, not a guarantee of the GitHub target after complex merges/rebases. Pin the intended base for deterministic stacked reviews, for example:
+PR reviews choose a base in this order:
 
-```bash
+1. Explicit `/re pr <base>`.
+2. `branch.<current>.gh-merge-base`.
+3. `branch.<current>.vscode-merge-base`.
+4. Unambiguous ancestry inference from local and remote-tracking refs.
+5. Repository default: `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master`.
+
+A configured but unavailable base is an error. Inference groups aliases, excludes
+the current branch and its own tracking refs, and compares ancestry rather than
+commit timestamps. Ambiguous parents or more than 256 candidates require an
+explicit base. Detached HEAD uses the default unless a base is specified.
+No automatic fetch or GitHub query is performed. Partial/promisor clones are
+rejected to prevent Git from lazily fetching missing objects. Base-selection
+provenance and fixed comparison revisions are included in the review.
+
+For a stable stacked-PR target:
+
+```sh
 git config branch.my-feature.gh-merge-base origin/parent-feature
 ```
 
-The extension only reads these settings; it never writes them, fetches, or queries GitHub. It requires no GitHub CLI or authentication. Remote-tracking refs are local snapshots; update them yourself if needed. The review header records `# Base`, `# Base selection`, and `# Merge base` so the choice is visible.
+Diffview runs against **private Git metadata**, reading existing objects via
+alternates. It does not use or modify the real index. Working content is frozen
+into private blobs before browsing; later edits cannot shift those review anchors.
+These working snapshots are temporary, not durable revisions: their comments carry
+original excerpts and tell the AI to inspect the current real files. Untracked
+files are excluded from `/re d`; review them explicitly with `@file` if needed.
+Built-in stage, unstage, discard, merge, and editable-file actions are filtered
+from the review's Diffview mappings; navigation and other user mappings are kept.
 
-The diff remains `git diff $(git merge-base BASE HEAD) HEAD`, not a direct comparison with the latest base-branch tip. All unmerged feature changes are included, including changes made before a later merge from the base branch.
+## Safety and limits
 
-### File references
+- Interactive Pi TUI only; busy/queued tasks and duplicate launches are blocked.
+  If the session, conversation branch, or task changes, the finished review is
+  kept as an input draft instead of sent into the wrong context.
+- Files are frozen in memory on their first open, including when a buffer is
+  recreated. Unopened directory files are read and revalidated only when selected.
+- Review source buffers cannot be edited or saved and disable modelines, swap,
+  and persistent undo locally; no editable source/diff copies or resident server.
+  Your startup scripts and plugins run normally, and unrelated buffers are not
+  protected. This prevents accidental review writes, not deliberate commands or
+  actions performed by your own plugins; Neovim is not a sandbox.
+- Up to 64 input references, 2,000 files, 32 MiB per file, and 64 MiB opened file
+  content per review (both Git sides count). Only regular UTF-8 text is reviewable.
+- Directory discovery respects Git ignore rules and filters dependency/cache,
+  credential, and sensitive paths. Symlinks and escaping paths are skipped;
+  explicit file symlinks resolve to their actual source. Every initial lazy read
+  revalidates the source. Explicit references can intentionally select otherwise filtered files.
+- Ordinary directories do not need a repository; scanning uses private metadata
+  and never creates a source `.git`. Directory probing uses eight bounded workers.
 
-Use Pi's `@` file picker or type a path after `/re @`. Paths can be relative to the working directory, absolute, or start with `~/` (`~\` also works on native Windows). Windows drive paths and UNC paths use the native Windows filesystem; in WSL use Linux paths such as `/mnt/c/...`. Quote paths with spaces, e.g. `/re @"docs/design notes.md"`. Multiple references are separated by whitespace followed by `@`, for example `/re @a.ts @"docs/design notes.md"`. A quoted path may contain spaces or literal `@` characters. No shell expansion is performed.
+## Development
 
-The extension reads a regular UTF-8 text file and opens a private temporary copy. The original is never opened for writing by the extension, including on save, cancellation, or editor failure. Empty files and read-only sources are supported. Binary/non-UTF-8 files and files over 32 MiB are rejected when opened. Directories use the workspace flow below. Symlinks resolve to the actual source path.
-
-The copy preserves a normal filename extension so Vim can detect its filetype (otherwise `.txt` is used). Scratch copies use UTF-8 and LF line endings, including when the original uses CRLF; the original is not rewritten. The AI prompt identifies the original via `<file source="/absolute/source/path">`; the annotated copy is reference material. The AI is told to inspect the original and make requested changes there, not in the review snapshot. Small copies are sent inline; large copies follow the same 16 KiB rule as other targets.
-
-### Directories and multiple files
-
-`/re @a.ts @b.ts` opens one private copy per tab. Use **`gt` / `gT`** to switch tabs. Duplicate source paths are opened once. The status line identifies the original file.
-
-`/re @src/` opens a lightweight, read-only file tree on the left and a review pane on the right. In the tree, **Enter** expands/collapses a directory or opens a file. File contents and their private copy directories are created only when opened; unopened files are never submitted. **`:ReTree`** returns to or restores the tree. No Neo-tree/Neovim plugin is required.
-
-Git must be installed, but **neither the working directory nor the selected directory needs to be a Git repository**. Existing repositories use their Git file listing; ordinary directories use Git metadata inside the private temporary workspace to apply `.gitignore` rules. The extension never initializes `.git` in a source folder. Directory scans also skip common dependency/credential directories, `.env`/key files, symlinks, binary data, and oversized files. Explicit file references can select files hidden by directory filtering.
-
-Save the current file with **`:w`**. Use **`:wqa`** to save all modified review buffers and exit Vim. In multi-window/tab mode, `:wq` may only close the current window; Pi resumes only after Vim exits. Enter and `,a` remain comment shortcuts in review files, while Enter navigates in the tree.
-
-Submission is intentionally simple: **only saved copies containing the literal `#REPLY:` marker are included**, once per source file. There is no source diff or old/new comment comparison for file references. Even an existing or empty `#REPLY:` counts. Unsaved edits, unmarked copies, the tree, and preview buffers are excluded. `:q` / `:qa!` discard unsaved changes, but previously saved marked versions still submit. Remove `#REPLY:` and save again to exclude a file.
-
-All included files are sent in one message with their original source paths. Small collections are quoted as `<file source="...">` sections inside `<files>`. Collections over 16 KiB use a retained `reviews.json` manifest mapping original files to saved annotated copies. The AI is instructed to inspect/edit the real files, not the snapshots. Nothing is sent if no saved file contains `#REPLY:`.
-
-Limits: 64 input references, 2,000 reviewable directory files, and 64 MiB total opened-copy/saved-review data. Narrow the selection if a limit is reached. Git listing has a 30-second timeout.
-
-### What is the merge base?
-
-The merge base is the best common ancestor of two commits, usually the point where the branches split:
-
-```text
-A---B---C---D  main
-     \
-      E---F    feature
-```
-
-Here `B` is the merge base. A PR review compares `B` with `F`, showing the feature branch's net changes without treating unrelated changes in `C` and `D` as part of the PR. If the base branch has been merged into the feature branch, the merge base can move forward.
-
-Commit and PR reviews exclude uncommitted changes. Root commits are compared with the empty tree; merge commits with their first parent. `/re diff` excludes untracked files and requires an existing `HEAD`.
-
-Git patches open as `.diff` snapshots with repository/commit metadata and **no syntax colors**, including no special coloring for `#REPLY:` comments. This also applies to `.diff`/`.patch` file copies in single-file, tabbed, and directory reviews. Chat and other source-file buffers keep their usual highlighting; only diff buffers have syntax coloring disabled. The header includes `# Generated with:` followed by the Git command that produced the patch, including the repository path, resolved commit hashes, and diff options. A `# Command shell:` header identifies PowerShell on native Windows or POSIX sh on macOS/Linux/WSL. PR snapshots also record `# Merge-base command:`. These commands describe the saved snapshot; working-tree output can change as files are edited.
-
-Both inline and large-file patch prompts explicitly instruct the AI to read the header, inspect the current repository files, and implement comments in those real files. **The review snapshot is reference material, not an edit target; the AI must not edit or apply it.**
-
-Existing diff hunk headers are not counted as new comments. Generating or saving a review does not check out a branch, change the index, or apply the patch. External diff/textconv programs are disabled. Git commands have a 30-second timeout and a 32 MiB output limit; empty diffs do not open vim.
-
-## Comments
-
-Use **`#REPLY:` only** to mark comments, anywhere including inline. The document opens with one blank line at the end for appending comments.
-
-Starting with v0.5.0, `@@`, `??`, and bare `REPLY:` are ordinary text, not annotation aliases. Git diff hunk headers (`@@ ... @@`) and language operators such as `??` are preserved. Use the shortcuts below to insert `#REPLY:` automatically.
-
-```markdown
-An original paragraph. #REPLY: Add an example.
-#REPLY: Explain the edge cases.
-Original text #REPLY: First comment #REPLY: Second comment
-```
-
-For chat and generated Git patch reviews, a comment ends at the next `#REPLY:` marker or the end of its line; empty comments and unchanged original markers do not count as new comments. **File/directory reviews use marker presence only**, not this comparison. User-authored text can be in any language; plugin messages and prompts are in English.
-
-### Historical versus current chat comments
-
-For chat reviews (`/re`, numeric indexes, ranges, and Ctrl+Alt+R), **every existing `#REPLY:` in the selected history is changed to `@ai:` in the review copy before Vim opens**, including inline references, old comments, and code examples. Stored session messages are not modified.
-
-- `@ai:` means a past comment or historical context, not a new request.
-- `#REPLY:` means a current comment you add in this review.
-
-Both inline and large-file prompts explicitly explain this distinction and tell the AI not to treat comments from earlier chat messages as new requests. The conversion happens only before editing, so newly added `#REPLY:` comments stay current. Editing only historical `@ai:` text does not submit a new review.
-
-File references and generated Git patches are not rewritten. File reviews include any saved copy containing `#REPLY:`; diff hunk headers are not annotation markers in any review mode.
-
-### Review-buffer shortcuts
-
-In Normal mode:
-
-| Key | Action |
-| --- | --- |
-| **Enter** | Open a new line below, insert `#REPLY: `, and enter Insert mode |
-| **`,a`** | Append ` #REPLY: ` to the current line and enter Insert mode |
-
-These bindings apply only to the temporary review buffer (replies, files, and patches). Other buffers, Insert-mode Enter, and your vimrc are unchanged. Starting a comment does not save or send it; save and quit when ready.
-
-## Save and quit
-
-- Any successful write marks the review for sending **after vim exits**.
-- `:wq`, `:w` then `:q`, and `:w` then `:q!` all send the **last saved version**.
-- Changes made after the last save are not sent unless saved again.
-- Quit without ever saving to cancel. In this review buffer, `:q` discards unsaved edits without a confirmation prompt.
-- Chat/generated Git reviews require new comments. File/directory reviews only require a saved copy containing `#REPLY:`.
-- For multiple files or a directory, use `:wqa` to save all modified copies and exit.
-- An abnormal editor exit sends nothing and restores Pi's UI.
-
-Writes are tracked using Vim events, so mappings and commands such as `:wall` and `:execute 'write'` also work. Your vimrc is not modified.
-
-## Message size
-
-The inline-message limit is **16 KiB of UTF-8 review bytes**, including trailing blank lines; multi-file workspaces count the combined source-tagged collection.
-
-- **Up to 16 KiB:** one short English instruction followed by the annotated document inside XML-style tags. No separate comment index or repeated comment list.
-- **Over 16 KiB:** a short XML-style prompt references `review.md` (or `review.diff` for patches, or the preserved extension for files) and `comments.json`, asking the AI to use `rg`/`grep` and read surrounding lines as needed. The JSON index identifies new comments; neither the large document nor its comments are embedded in the prompt.
-
-Large multi-file workspaces use `reviews.json` instead: it contains only the included source-file/annotated-copy mappings, not a duplicated comment index. The private `saved` folder contains only included snapshots, so the AI can search it for `#REPLY:` and read relevant context.
-
-The outer tag identifies the source: `<reply>` for one AI reply, `<replies>` for a reply range, `<patch>` for generated Git patches, `<file source="...">` for one file, or `<files>` for a file collection. A range prompt quotes the collection of numbered `<reply>` sections and tells the AI to use their indexes and surrounding text to locate comments. Annotated text goes directly inside it, without an extra wrapper:
-
-```xml
-<reply subject="AI response 1 (0 = latest)"><![CDATA[
-Original reply. #REPLY: Add an example.
-]]></reply>
-```
-
-CDATA preserves code, XML tags, and arbitrary user text without confusing boundaries. Literal `]]>` sequences are safely split across CDATA sections. Large-file prompts keep the same `<reply>`, `<replies>`, `<patch>`, or `<file>` outer tag and use `<annotated_file>`, `<comments_file>`, and `<search_command>` elements instead. `<annotated_file>` is the saved source text with your comments, not a code file the AI should edit directly.
-
-Small, cancelled, and comment-free reviews are cleaned up. Large files referenced by a message or draft remain in a private system temporary directory named `pi-review-*` or `pi-files-*` (POSIX directory mode `0700`, file mode `0600`; Windows uses the temporary directory's inherited ACLs). Delete them when no longer needed; system temporary-file cleanup may also remove them. Reloading the extension does not delete referenced files.
-
-## Editor
-
-Only **vim** / native Windows **vim.exe** is selected by default. To specify its executable path, without arguments:
-
-```bash
-PI_REVIEW_EDITOR=/usr/bin/vim pi
-```
-
-Your Vim configuration is retained. Modelines, swap, persistent undo, and backup files are disabled for the review. The temporary Vim session uses UTF-8 so Unicode source text and file paths work consistently. This is independent of Pi's `externalEditor` setting and Ctrl+G.
-
-## Performance
-
-Directory candidates are checked in batches of up to eight, keeping file handles bounded and stopping within one batch of the file-count limit. Results retain Git listing order regardless of probe completion order. Git ignore rules, path containment, symlink filtering, UTF-8 checks, and size limits remain in place.
-
-Vim builds a copy-path index once, so entering the tree or another unrelated buffer does not repeatedly resolve every candidate path. Marker-free reviews skip comment parsing; inline file reviews use only the `#REPLY:` presence check. Large single-file reviews still generate their comment index when needed.
-
-## Tests
-
-```bash
+```sh
 npm test
+git diff --check
+pi --no-extensions --extension ./index.ts
 ```
 
-The existing regression suite runs on macOS/Linux with Node.js 22.19+ and Git. Real Vim tests are skipped if Vim is unavailable. Git tests use disposable local repositories and never contact a remote. No new native Windows or WSL test jobs are configured.
+The isolated development command avoids loading an older installed `/re` alongside
+this checkout. Neovim integration tests run when Neovim >= 0.10 is available; set
+`PI_REVIEW_REQUIRE_NVIM=1` to make its absence an error (as CI does).
+Git UI tests also require the pinned Diffview checkout; `/re setup` installs it.
+`/reload` reloads the currently configured extension source; it does **not** switch
+an installed Git package to this development checkout. To try the checkout from
+another directory, use `pi --no-extensions -e /absolute/path/to/pi-reply-to-ai/index.ts`
+(add `--continue` to resume that directory's session).
+CI tests Neovim 0.10 with the pinned dependency. No npm runtime dependencies or
+publication are required.
+
+[Diffview](https://github.com/sindrets/diffview.nvim) is a separately installed
+GPL-3.0-or-later dependency, not vendored or relicensed by this repository. Its
+upstream checkout retains its license and source. The integration uses its
+`setup`/`open` entry points, documented hooks and actions. Because hooks expose the
+layout side but not a path, a small adapter matches the pinned revision-buffer
+names against the source allowlist; real Neovim tests cover this boundary. Test
+it before updating the pin. Annotation state and Markdown export do not depend
+on Diffview objects.
+
+### Migration from 0.6
+
+This is a Neovim-only replacement, not a compatibility layer. Editable private
+copies, marker scanning, Vim scripts, and `comments.json` / `reviews.json` exports
+have been removed. Your normal Neovim configuration is loaded. Use Enter or
+`:ReComment` to open an ordinary comment split, then Ctrl+Enter or `:wq` to save
+and close. Enter/Esc remain native Vim keys inside the comment split; normal
+Neovim exit sends the saved review. Use `:ReCancel` to discard it. ZZ/ZQ and navigation keys are not rebound.
+The `/re` target commands and Pi shortcut remain the same.
