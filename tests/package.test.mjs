@@ -5,7 +5,7 @@ const root = new URL("../", import.meta.url);
 const read = path => readFileSync(new URL(path, root), "utf8");
 test("personal package exposes one extension without npm runtime dependencies or gallery publication", () => {
 	const manifest = JSON.parse(read("package.json"));
-	assert.equal(manifest.name, "@elemount/pi-reply-to-ai"); assert.equal(manifest.version, "0.7.0");
+	assert.equal(manifest.name, "@elemount/pi-reply-to-ai"); assert.equal(manifest.version, "0.7.1");
 	assert.equal(manifest.private, true); assert.equal(manifest.license, "UNLICENSED");
 	assert.deepEqual(manifest.pi.extensions, ["./index.ts"]); assert.equal(manifest.dependencies, undefined);
 	assert.equal(manifest.repository.url, "https://github.com/elemount/pi-reply-to-ai.git");

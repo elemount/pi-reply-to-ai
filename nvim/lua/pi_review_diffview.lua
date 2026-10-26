@@ -18,17 +18,6 @@ function M.source_for_buffer(name, symbol, view, sources)
     end
   end
 end
-local function plain_diff(win)
-  local overrides = { DiffAdd = "Normal", DiffDelete = "Normal", DiffChange = "Normal", DiffText = "Normal",
-    DiffviewDiffAdd = "Normal", DiffviewDiffDelete = "Normal", DiffviewDiffChange = "Normal", DiffviewDiffText = "Normal" }
-  local mapping = {}
-  for entry in vim.wo[win].winhighlight:gmatch('[^,]+') do
-    local name = entry:match('^([^:]+):')
-    if not overrides[name] then table.insert(mapping, entry) end
-  end
-  for name, target in pairs(overrides) do table.insert(mapping, name .. ':' .. target) end
-  vim.wo[win].winhighlight = table.concat(mapping, ',')
-end
 local function review_keymaps(config, actions)
   local blocked = {}
   for _, name in ipairs({ 'toggle_stage_entry', 'stage_all', 'unstage_all', 'restore_entry',
@@ -76,7 +65,6 @@ function M.open(view, sources, review)
   options.keymaps = review_keymaps(config, require('diffview.actions'))
   options.diff_binaries = true -- Our source allowlist has already checked UTF-8 and size limits.
   options.watch_index = false
-  options.enhanced_diff_hl = false
   options.git_cmd = { 'git', '-c', 'core.fsmonitor=false', '-c', 'diff.renames=false' }
   options.default_args.DiffviewOpen = {} -- Never imply a mutable local side for fixed revisions.
   local opened = false
@@ -87,11 +75,10 @@ function M.open(view, sources, review)
       callback(...)
     end
   end
-  local function attach(buf, win, ctx)
+  local function attach(buf, _, ctx)
     local id = M.source_for_buffer(api.nvim_buf_get_name(buf), ctx.symbol, view, sources)
     if id ~= nil then
       review.attach(buf, id, true)
-      plain_diff(win)
     end
   end
   hook('view_opened', function() opened = true end)

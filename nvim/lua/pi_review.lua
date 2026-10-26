@@ -21,11 +21,6 @@ local function readonly(buf)
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].modified = false
 end
-local function plain_source(buf)
-  vim.treesitter.stop(buf)
-  vim.bo[buf].syntax = "OFF"
-  api.nvim_buf_call(buf, function() vim.cmd("silent! syntax clear") end)
-end
 local function literal(value)
   return value:gsub("[%c]", function(char) return string.format("\\x%02x", char:byte()) end)
 end
@@ -216,7 +211,6 @@ function M.attach(buf, id, diff)
     local filetype = sources[id].reply ~= nil and "markdown" or (vim.filetype.match({ filename = sources[id].path or "", buf = buf }) or "text")
     if vim.bo[buf].filetype ~= filetype then vim.bo[buf].filetype = filetype end
   end
-  if diff or vim.bo[buf].filetype == "diff" then plain_source(buf) end
   -- User FileType hooks may change local options; source protection still applies.
   readonly(buf)
   local opts = { buffer = buf, silent = true, desc = 'Add or edit a review comment' }

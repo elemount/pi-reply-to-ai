@@ -180,7 +180,7 @@ vim.api.nvim_buf_set_lines(0,0,-1,false,{'unsaved user draft'})
 	} finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
-test("Diffview keeps user layout, hooks, navigation and global theme; only review buffers lose diff colors", { skip: !hasNeovim || !hasDiffview }, async () => {
+test("Diffview keeps user layout, hooks, navigation, diff highlighting, syntax and Tree-sitter", { skip: !hasNeovim || !hasDiffview }, async () => {
 	await withRepository(async ({ cwd, write, commit }) => {
 		write('file.md', '# Before\n'); commit(); write('file.md', '# After\n'); commit();
 		const workspace = await createGitWorkspace(await gitComparison(cwd, { kind: 'commit', revision: 'HEAD' }));
@@ -198,6 +198,7 @@ assert(vim.b.user_diffview_hook)
 local cfg=require('diffview.config').get_config()
 assert(cfg.view.default.layout == 'diff2_vertical')
 assert(cfg.file_panel.win_config.width == 21)
+assert(cfg.enhanced_diff_hl == true)
 local custom, native, discard=false,false,false
 for _,map in ipairs(cfg.keymaps.file_panel) do
   if map[2]=='s' and map[3]==require('diffview.actions').select_next_entry then custom=true end
@@ -207,9 +208,12 @@ end
 assert(custom and native and not discard)
 assert(vim.api.nvim_get_hl(0,{name='DiffAdd'}).bg == 0x123456)
 assert(vim.api.nvim_get_hl(0,{name='Comment'}).fg == 0x55aa77)
-assert(vim.wo.winhighlight:find('DiffAdd:Normal',1,true))
-assert(vim.wo.winhighlight:find('CursorLine:Visual',1,true))
-assert(vim.treesitter.highlighter.active[vim.api.nvim_get_current_buf()] == nil)
+assert(vim.wo.winhighlight == 'CursorLine:Visual,DiffAdd:Search')
+assert(vim.bo.filetype == 'markdown' and vim.bo.syntax == vim.b.user_diffview_syntax)
+assert(vim.bo.syntax ~= 'OFF')
+if vim.fn.has('nvim-0.12') == 1 then
+  assert(vim.treesitter.highlighter.active[vim.api.nvim_get_current_buf()] ~= nil)
+end
 r.comment(false)
 ${luaSaveComment('comment with my Diffview configuration')}
 vim.cmd('DiffviewClose')
@@ -224,6 +228,7 @@ vim.api.nvim_set_hl(0,'Comment',{fg=0x55aa77})
 local actions=require('diffview.actions')
 require('diffview').setup({
   use_icons=false,
+  enhanced_diff_hl=true,
   view={default={layout='diff2_vertical'}},
   file_panel={win_config={width=21}},
   keymaps={file_panel={{'n','s',actions.select_next_entry}}},
@@ -234,7 +239,9 @@ require('diffview').setup({
       assert(ctx.layout_name=='diff2_vertical')
       vim.g.user_diffview_read=true
       vim.b[buf].user_diffview_hook=true
-      vim.wo.winhighlight='CursorLine:Visual'
+      vim.wo.winhighlight='CursorLine:Visual,DiffAdd:Search'
+      if vim.fn.has('nvim-0.12') == 1 then vim.treesitter.start(buf,'markdown') end
+      vim.b[buf].user_diffview_syntax=vim.bo[buf].syntax
     end,
   },
 })

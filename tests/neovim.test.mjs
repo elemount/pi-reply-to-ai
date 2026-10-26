@@ -153,9 +153,9 @@ for _,win in ipairs(vim.api.nvim_list_wins()) do
 end
 assert(old_win and new_win, 'Could not identify old/new source side')
 vim.api.nvim_set_current_win(old_win)
-assert(vim.bo.readonly and not vim.bo.modifiable and vim.bo.syntax == 'OFF')
-assert(vim.wo.winhighlight:find('DiffviewDiffAdd:Normal', 1, true))
-assert(vim.treesitter.highlighter.active[vim.api.nvim_get_current_buf()] == nil)
+assert(vim.bo.readonly and not vim.bo.modifiable and vim.bo.syntax ~= 'OFF')
+assert(not vim.wo.winhighlight:find('DiffviewDiffAdd:Normal', 1, true))
+assert(not vim.wo.winhighlight:find('DiffAdd:Normal', 1, true))
 r.comment(false)
 ${luaSaveComment("old-side comment")}
 vim.api.nvim_set_current_win(new_win)

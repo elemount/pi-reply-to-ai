@@ -17,7 +17,7 @@ assert(vim.wait(15000, function()
 end, 20), 'No annotated source buffer')
 `;
 
-test("empty files accept an explicit line-one comment and .patch comments remain uncolored beside normal sources", options, async () => {
+test("empty files accept an explicit line-one comment and .patch sources keep syntax highlighting with uncolored comment previews", options, async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-nvim-edge-"));
 	try {
 		writeFileSync(join(cwd, "empty.txt"), ""); writeFileSync(join(cwd, "change.patch"), "@@ -1 +1 @@\n-old\n+new\n"); writeFileSync(join(cwd, "normal.py"), "x = 1\n");
@@ -28,7 +28,7 @@ assert(vim.api.nvim_buf_get_lines(0,0,1,false)[1] == '')
 r.comment(false)
 ${luaSaveComment("empty file comment")}
 vim.cmd('bnext')
-assert(vim.bo.filetype == 'diff' and vim.bo.syntax == 'OFF')
+assert(vim.bo.filetype == 'diff' and vim.bo.syntax == 'diff')
 r.comment(false)
 ${luaSaveComment("patch comment")}
 local marks=vim.api.nvim_buf_get_extmarks(0,r.namespace,0,-1,{details=true})

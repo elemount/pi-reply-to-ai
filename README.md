@@ -70,7 +70,8 @@ absolute, quoted, and literal paths are supported without shell expansion.
 - Git navigation, layout, file panel, and hooks follow your Diffview configuration.
   Defaults include **Tab / Shift+Tab** for files and native **`]c` / `[c`** for
   hunks; **`:DiffviewFocusFiles`** opens the file panel. Both sides accept comments.
-  Diff text and comment previews are uncolored without changing your global theme.
+  Diff highlighting, syntax, and Tree-sitter follow your configuration; comment
+  previews in Git and patch buffers remain uncolored.
 
 Saved comments appear as virtual-line previews below read-only source lines; they
 never become part of the diff. Comment state survives file switches and buffer
